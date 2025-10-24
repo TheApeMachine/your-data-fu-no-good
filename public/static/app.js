@@ -87,8 +87,13 @@ async function loadDatasetResults(datasetId) {
         const analysesResponse = await axios.get(`/api/datasets/${datasetId}/analyses`);
         const { analyses } = analysesResponse.data;
 
+        // Fetch visualizations
+        const visualizationsResponse = await axios.get(`/api/datasets/${datasetId}/visualizations`);
+        const { visualizations } = visualizationsResponse.data;
+
         // Display results
         displayDatasetInfo(dataset);
+        displayVisualizations(visualizations);
         displayInsights(analyses);
         displaySampleData(sample, dataset.columns);
 
@@ -103,6 +108,47 @@ async function loadDatasetResults(datasetId) {
             resetUpload();
         }
     }
+}
+
+// Display visualizations
+function displayVisualizations(visualizations) {
+    const container = document.getElementById('visualizations-container');
+    
+    if (visualizations.length === 0) {
+        container.innerHTML = `
+            <div class="col-span-2 text-center py-8 text-gray-500">
+                <i class="fas fa-chart-bar text-3xl mb-3"></i>
+                <p>No visualizations generated yet.</p>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = '';
+
+    visualizations.forEach((viz, index) => {
+        const canvasId = `chart-${index}`;
+        const cardDiv = document.createElement('div');
+        cardDiv.className = 'bg-gray-50 rounded-lg p-4';
+        cardDiv.innerHTML = `
+            <div class="mb-3">
+                <h3 class="font-semibold text-gray-900">${viz.title}</h3>
+                <p class="text-sm text-gray-600 mt-1">${viz.explanation}</p>
+            </div>
+            <div style="position: relative; height: 300px;">
+                <canvas id="${canvasId}"></canvas>
+            </div>
+        `;
+        container.appendChild(cardDiv);
+
+        // Render chart after DOM update
+        setTimeout(() => {
+            const ctx = document.getElementById(canvasId);
+            if (ctx) {
+                new Chart(ctx, viz.config);
+            }
+        }, 100);
+    });
 }
 
 // Display dataset information

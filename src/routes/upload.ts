@@ -3,6 +3,7 @@
 import { Hono } from 'hono';
 import { parseCSV, inferColumnTypes } from '../utils/csv-parser';
 import { analyzeDataset } from '../utils/analyzer';
+import { generateVisualizations } from '../utils/visualizer';
 import type { Bindings } from '../types';
 
 const upload = new Hono<{ Bindings: Bindings }>();
@@ -86,6 +87,19 @@ upload.post('/', async (c) => {
     // Start analysis in background (async, don't await)
     analyzeDataset(datasetId, rows, columns, c.env.DB)
       .then(async () => {
+        // Fetch analyses to generate visualizations
+        const analysesResult = await c.env.DB.prepare(`
+          SELECT * FROM analyses WHERE dataset_id = ?
+        `).bind(datasetId).all();
+
+        const analyses = analysesResult.results.map(a => ({
+          ...a,
+          result: JSON.parse(a.result as string)
+        })) as any[];
+
+        // Generate visualizations
+        await generateVisualizations(datasetId, rows, analyses, c.env.DB);
+
         // Update status to complete
         await c.env.DB.prepare(`
           UPDATE datasets SET analysis_status = ?, cleaning_status = ?, visualization_status = ?

@@ -123,6 +123,15 @@ app.get('/', (c) => {
                         <div id="dataset-info" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
                     </div>
 
+                    <!-- Visualizations -->
+                    <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
+                            <i class="fas fa-chart-line mr-2 text-purple-600"></i>
+                            Visual Insights
+                        </h2>
+                        <div id="visualizations-container" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
+                    </div>
+
                     <!-- Key Insights -->
                     <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
                         <h2 class="text-2xl font-bold text-gray-800 mb-4">
