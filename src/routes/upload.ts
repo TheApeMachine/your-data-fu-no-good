@@ -25,6 +25,11 @@ upload.post('/', async (c) => {
       return c.json({ error: 'Unsupported file type. Please upload CSV or JSON.' }, 400);
     }
 
+    // Check file size (limit to 5MB for performance)
+    if (file.size > 5 * 1024 * 1024) {
+      return c.json({ error: 'File too large. Maximum size is 5MB.' }, 400);
+    }
+
     // Read file content
     const content = await file.text();
     let rows: Record<string, any>[];
@@ -43,6 +48,11 @@ upload.post('/', async (c) => {
 
     if (rows.length === 0) {
       return c.json({ error: 'File contains no data' }, 400);
+    }
+
+    // Limit row count for MVP (prevents server overload)
+    if (rows.length > 10000) {
+      return c.json({ error: 'Dataset too large. Maximum 10,000 rows supported.' }, 400);
     }
 
     // Infer column types
