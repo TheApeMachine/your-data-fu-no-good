@@ -62,7 +62,7 @@ datasets.get('/:id/analyses', async (c) => {
     const id = c.req.param('id');
 
     const result = await c.env.DB.prepare(`
-      SELECT * FROM analyses WHERE dataset_id = ? ORDER BY importance DESC, confidence DESC
+      SELECT * FROM analyses WHERE dataset_id = ? ORDER BY quality_score DESC, confidence DESC
     `).bind(id).all();
 
     const analyses = result.results.map(a => ({

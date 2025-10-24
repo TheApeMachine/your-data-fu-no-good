@@ -24,7 +24,18 @@ export async function generateVisualizations(
 
   let displayOrder = 0;
 
-  for (const analysis of analyses) {
+  // Sort analyses by quality score (highest first)
+  const sortedAnalyses = [...analyses].sort((a, b) => 
+    (b.quality_score || 50) - (a.quality_score || 50)
+  );
+
+  for (const analysis of sortedAnalyses) {
+    // Skip visualizations for low-quality insights (score < 30)
+    if ((analysis.quality_score || 50) < 30) {
+      console.log(`Skipping low-quality visualization for ${analysis.column_name} (score: ${analysis.quality_score})`);
+      continue;
+    }
+
     const viz = await createVisualizationForAnalysis(analysis, rows);
     
     if (viz) {

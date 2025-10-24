@@ -1,6 +1,7 @@
 // Automated data analysis engine
 
 import { calculateStats, detectOutliers, calculateCorrelation, detectTrend } from './statistics';
+import { scoreInsightQuality } from './quality-scorer';
 import type { Analysis } from '../types';
 
 export async function analyzeDataset(
@@ -19,10 +20,11 @@ export async function analyzeDataset(
     // Store statistics analysis
     const explanation = generateStatsExplanation(col.name, col.type, stats);
     const importance = determineImportance(stats, col.type);
+    const qualityScore = scoreInsightQuality('statistics', col.name, stats, stats);
 
     await db.prepare(`
-      INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       datasetId,
       'statistics',
@@ -30,7 +32,8 @@ export async function analyzeDataset(
       JSON.stringify(stats),
       1.0,
       explanation,
-      importance
+      importance,
+      qualityScore.score
     ).run();
 
     // 2. Outlier detection for numeric columns
@@ -40,18 +43,21 @@ export async function analyzeDataset(
 
       if (outliers.indices.length > 0) {
         const outlierExplanation = `Found ${outliers.indices.length} unusual values in "${col.name}" (${((outliers.indices.length / numbers.length) * 100).toFixed(1)}% of data). These values are significantly different from the rest and might need attention.`;
+        const outlierResult = { count: outliers.indices.length, indices: outliers.indices.slice(0, 10) };
+        const outlierQuality = scoreInsightQuality('outlier', col.name, outlierResult, stats);
         
         await db.prepare(`
-          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           datasetId,
           'outlier',
           col.name,
-          JSON.stringify({ count: outliers.indices.length, indices: outliers.indices.slice(0, 10) }),
+          JSON.stringify(outlierResult),
           0.85,
           outlierExplanation,
-          outliers.indices.length > numbers.length * 0.05 ? 'high' : 'medium'
+          outliers.indices.length > numbers.length * 0.05 ? 'high' : 'medium',
+          outlierQuality.score
         ).run();
       }
 
@@ -60,10 +66,11 @@ export async function analyzeDataset(
         const trend = detectTrend(numbers);
         if (trend.direction !== 'stable') {
           const trendExplanation = `"${col.name}" shows a ${trend.direction === 'up' ? 'rising' : 'falling'} trend with ${(trend.strength * 100).toFixed(0)}% strength. This ${trend.direction === 'up' ? 'increase' : 'decrease'} is consistent across the dataset.`;
+          const trendQuality = scoreInsightQuality('trend', col.name, trend, stats);
           
           await db.prepare(`
-            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             datasetId,
             'trend',
@@ -71,7 +78,8 @@ export async function analyzeDataset(
             JSON.stringify(trend),
             trend.strength,
             trendExplanation,
-            trend.strength > 0.5 ? 'high' : 'medium'
+            trend.strength > 0.5 ? 'high' : 'medium',
+            trendQuality.score
           ).run();
         }
       }
@@ -93,18 +101,21 @@ export async function analyzeDataset(
 
         if (Math.abs(correlation) > 0.5) {
           const corrExplanation = generateCorrelationExplanation(col1.name, col2.name, correlation);
+          const corrResult = { column1: col1.name, column2: col2.name, correlation };
+          const corrQuality = scoreInsightQuality('correlation', undefined, corrResult, { count: values1.length });
           
           await db.prepare(`
-            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(
             datasetId,
             'correlation',
             `${col1.name}_vs_${col2.name}`,
-            JSON.stringify({ column1: col1.name, column2: col2.name, correlation }),
+            JSON.stringify(corrResult),
             Math.abs(correlation),
             corrExplanation,
-            Math.abs(correlation) > 0.7 ? 'high' : 'medium'
+            Math.abs(correlation) > 0.7 ? 'high' : 'medium',
+            corrQuality.score
           ).run();
         }
       }
@@ -126,18 +137,22 @@ export async function analyzeDataset(
 
       if (topPatterns.length > 0 && topPatterns[0][1] > values.length * 0.1) {
         const patternExplanation = `The most common value in "${col.name}" is "${topPatterns[0][0]}" appearing ${topPatterns[0][1]} times (${((topPatterns[0][1] / values.length) * 100).toFixed(1)}% of records).`;
+        const patternResult = { topPatterns };
+        const patternStats = { count: values.length, uniqueCount: new Set(values).size };
+        const patternQuality = scoreInsightQuality('pattern', col.name, patternResult, patternStats);
         
         await db.prepare(`
-          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(
           datasetId,
           'pattern',
           col.name,
-          JSON.stringify({ topPatterns }),
+          JSON.stringify(patternResult),
           0.9,
           patternExplanation,
-          'medium'
+          'medium',
+          patternQuality.score
         ).run();
       }
     }
