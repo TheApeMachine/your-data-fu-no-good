@@ -84,9 +84,13 @@ upload.post('/', async (c) => {
       ).run();
     }
 
-    // Start analysis in background (async, don't await)
-    analyzeDataset(datasetId, rows, columns, c.env.DB)
-      .then(async () => {
+    // For small datasets (<100 rows), run analysis synchronously
+    // For large datasets, user needs to trigger analysis via /api/analyze/:id
+    if (rows.length <= 100) {
+      try {
+        // Run analysis
+        await analyzeDataset(datasetId, rows, columns, c.env.DB);
+
         // Fetch analyses to generate visualizations
         const analysesResult = await c.env.DB.prepare(`
           SELECT * FROM analyses WHERE dataset_id = ?
@@ -105,14 +109,14 @@ upload.post('/', async (c) => {
           UPDATE datasets SET analysis_status = ?, cleaning_status = ?, visualization_status = ?
           WHERE id = ?
         `).bind('complete', 'complete', 'complete', datasetId).run();
-      })
-      .catch(async (error) => {
+      } catch (error) {
         console.error('Analysis error:', error);
         await c.env.DB.prepare(`
           UPDATE datasets SET analysis_status = ?
           WHERE id = ?
         `).bind('error', datasetId).run();
-      });
+      }
+    }
 
     return c.json({
       success: true,

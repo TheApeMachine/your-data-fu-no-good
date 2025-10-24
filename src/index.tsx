@@ -6,6 +6,7 @@ import type { Bindings } from './types';
 // Import routes
 import upload from './routes/upload';
 import datasets from './routes/datasets';
+import analyze from './routes/analyze';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -18,6 +19,7 @@ app.use('/static/*', serveStatic({ root: './public' }));
 // API routes
 app.route('/api/upload', upload);
 app.route('/api/datasets', datasets);
+app.route('/api/analyze', analyze);
 
 // Health check
 app.get('/api/health', (c) => {
