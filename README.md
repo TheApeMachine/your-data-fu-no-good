@@ -54,13 +54,24 @@ Every finding includes:
 - **Importance rating**: High/Medium/Low priority
 - **Context**: Why this matters for your data
 
-### 4. Interactive Results Display
+### 4. Automatic Visualizations ✅
+Every analysis gets a custom-generated chart:
+- **Histograms** for numeric distributions
+- **Bar Charts** for categorical data and top values
+- **Line Charts** for trends over time
+- **Scatter Plots** for correlations and outliers
+- **Pie Charts** for pattern distributions
+- Smart chart type selection based on data characteristics
+- Explanations for why each visualization was chosen
+
+### 5. Interactive Results Display
 - **Dataset Overview**: Row count, column count, upload date
+- **Visual Insights**: Auto-generated charts displayed first
 - **Key Insights**: Sorted by importance and confidence
 - **Sample Data**: First 10 rows in readable table format
 - **Visual Indicators**: Color-coded importance levels
 
-### 5. Dataset Management
+### 6. Dataset Management
 - **My Datasets**: View all uploaded datasets
 - **Quick Access**: Click any dataset to view results
 - **Delete Option**: Remove datasets when no longer needed
@@ -157,30 +168,24 @@ Every finding includes:
 
 ## What's NOT Implemented Yet
 
-### 1. Automatic Visualization Generation ⏳
-- Chart type auto-selection based on data characteristics
-- Chart.js configuration generation
-- Visualization storage in database
-- Display in UI
-
-### 2. Data Cleaning Pipeline ⏳
+### 1. Data Cleaning Pipeline ⏳
 - Automated null value filling
 - Outlier removal options
 - Type conversion suggestions
 - Normalization/standardization
 
-### 3. Advanced Analysis ⏳
+### 2. Advanced Analysis ⏳
 - **Clustering**: Group similar data points automatically
 - **Time Series**: Seasonal patterns, forecasting
 - **Distribution Analysis**: Histogram generation, normality tests
 - **Text Analysis**: For string columns with natural language
 
-### 4. Export Features ⏳
+### 3. Export Features ⏳
 - Download cleaned dataset as CSV/JSON
 - Export analysis report as PDF
 - Share insights via URL
 
-### 5. User Preferences ⏳
+### 4. User Preferences ⏳
 - Save analysis preferences
 - Custom insight importance thresholds
 - Column ignore/focus settings
@@ -188,50 +193,44 @@ Every finding includes:
 ## Recommended Next Steps
 
 ### Immediate (High Priority)
-1. **Add Visualization Generator**
-   - Implement chart type selection logic
-   - Generate Chart.js configs for analyses
-   - Create visualization display component
-   - Store visualizations in D1
-
-2. **Enhance Analysis Engine**
+1. **Enhance Analysis Engine**
    - Add clustering (k-means for numeric data)
    - Implement time series detection
    - Add distribution analysis (histograms)
 
-3. **Testing**
+2. **Testing**
    - Create sample CSV/JSON test files
    - Test with various data types
    - Stress test with large datasets (10k+ rows)
 
 ### Short Term (Medium Priority)
-4. **Data Cleaning UI**
+3. **Data Cleaning UI**
    - Display cleaning suggestions
    - Allow user to accept/reject cleanings
    - Apply cleanings and store cleaned rows
 
-5. **Export Functionality**
+4. **Export Functionality**
    - CSV export of cleaned data
    - JSON export of analysis results
    - Printable HTML reports
 
-6. **Performance Optimization**
+5. **Performance Optimization**
    - Batch insert for large datasets
    - Lazy loading for large result sets
    - Analysis caching
 
 ### Long Term (Lower Priority)
-7. **Collaboration Features**
+6. **Collaboration Features**
    - Share datasets via URL
    - Public/private dataset toggle
    - Comments on insights
 
-8. **Advanced Visualizations**
-   - Interactive charts with Chart.js
-   - Heatmaps for correlations
-   - Time series plots
+7. **Interactive Visualizations**
+   - Click-to-zoom on charts
+   - Hover tooltips with detailed info
+   - Export charts as images
 
-9. **AI-Powered Insights**
+8. **AI-Powered Insights**
    - Natural language query: "What drives my sales?"
    - Automated narrative generation
    - Prediction models
