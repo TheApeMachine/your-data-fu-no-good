@@ -9,6 +9,7 @@ import datasets from './routes/datasets';
 import analyze from './routes/analyze';
 import relationships from './routes/relationships';
 import mappings from './routes/mappings';
+import chat from './routes/chat';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -24,6 +25,7 @@ app.route('/api/datasets', datasets);
 app.route('/api/analyze', analyze);
 app.route('/api/relationships', relationships);
 app.route('/api/mappings', mappings);
+app.route('/api/chat', chat);
 
 // Health check
 app.get('/api/health', (c) => {
@@ -279,7 +281,7 @@ app.get('/', (c) => {
                                     <i class="fas fa-search mx-3" style="color: var(--text-secondary);"></i>
                                     <input type="text" id="insight-search" 
                                            placeholder="Search insights, columns, patterns..." 
-                                           onkeyup="filterInsights(this.value)"
+                                           onkeyup="debouncedSearch(this.value)"
                                            class="flex-1 bg-transparent border-none outline-none"
                                            style="color: var(--text-primary);">
                                 </div>
@@ -370,6 +372,45 @@ app.get('/', (c) => {
             </main>
         </div>
 
+        <!-- Chat Widget -->
+        <div id="chat-widget" class="hidden fixed bottom-20 right-8 w-96 h-[32rem] neu-card flex flex-col no-print" style="z-index: 1000;">
+            <div class="p-4 border-b flex items-center justify-between" style="border-color: var(--shadow-dark);">
+                <div class="flex items-center gap-2">
+                    <i class="fas fa-brain" style="color: var(--accent);"></i>
+                    <h3 class="font-semibold" style="color: var(--text-primary);">Data Assistant</h3>
+                </div>
+                <button onclick="clearChat()" class="neu-button p-2" title="Clear Chat">
+                    <i class="fas fa-redo text-sm"></i>
+                </button>
+            </div>
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4" style="background: var(--bg-primary);">
+                <div class="flex items-start gap-3 mb-3">
+                    <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style="background: var(--accent); color: white;">
+                        <i class="fas fa-brain text-sm"></i>
+                    </div>
+                    <div class="neu-card px-4 py-2 max-w-[80%]" style="color: var(--text-primary);">
+                        👋 Hi! I'm your data analysis assistant. I can help you understand patterns, correlations, and insights in your data. What would you like to know?
+                    </div>
+                </div>
+            </div>
+            <div class="p-4 border-t flex gap-2" style="border-color: var(--shadow-dark);">
+                <input type="text" id="chat-input" 
+                       placeholder="Ask about your data..." 
+                       class="flex-1 neu-card-inset rounded-lg px-4 py-2 bg-transparent border-none outline-none"
+                       style="color: var(--text-primary);">
+                <button onclick="sendChatMessage()" class="neu-button-accent px-4 py-2">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Chat Toggle Button -->
+        <button id="chat-toggle-btn" onclick="toggleChat()" 
+                class="fixed bottom-8 right-8 w-14 h-14 neu-button-accent rounded-full flex items-center justify-center no-print"
+                style="z-index: 999;">
+            <i class="fas fa-comments text-xl"></i>
+        </button>
+
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
         <script>
           // Theme management
@@ -394,6 +435,7 @@ app.get('/', (c) => {
         </script>
         <script src="/static/app.js"></script>
         <script src="/static/graph.js"></script>
+        <script src="/static/chat.js"></script>
     </body>
     </html>
   `);

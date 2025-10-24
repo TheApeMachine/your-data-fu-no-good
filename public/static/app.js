@@ -4,6 +4,7 @@ let currentDatasetId = null;
 let allAnalyses = []; // Store all analyses for filtering
 let allVisualizations = []; // Store all visualizations for filtering
 let bookmarkedInsights = new Set(); // Store bookmarked insight IDs
+let searchDebounceTimer = null; // Debounce timer for search
 
 // Load bookmarks from localStorage
 function loadBookmarks() {
@@ -166,6 +167,19 @@ async function loadDatasetResults(datasetId) {
     }
 }
 
+// Debounced search function
+function debouncedSearch(searchTerm) {
+    // Clear existing timer
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+    }
+    
+    // Set new timer (300ms delay)
+    searchDebounceTimer = setTimeout(() => {
+        filterInsights(searchTerm);
+    }, 300);
+}
+
 // Search and filter insights
 function filterInsights(searchTerm) {
     const term = searchTerm.toLowerCase().trim();
@@ -173,6 +187,8 @@ function filterInsights(searchTerm) {
     if (!term) {
         displayInsights(allAnalyses);
         displayVisualizations(allVisualizations);
+        const resultCount = document.getElementById('search-result-count');
+        if (resultCount) resultCount.textContent = '';
         return;
     }
 

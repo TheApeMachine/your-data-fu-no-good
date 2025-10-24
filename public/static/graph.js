@@ -48,11 +48,23 @@ function renderGraph(nodes, edges) {
     // Clear container
     container.innerHTML = '<div id="cy" style="width: 100%; height: 100%;"></div>';
 
+    // Find nodes that have at least one connection
+    const connectedNodeIds = new Set();
+    edges.forEach(edge => {
+        connectedNodeIds.add(edge.source);
+        connectedNodeIds.add(edge.target);
+    });
+
+    // Filter to only connected nodes
+    const connectedNodes = nodes.filter(node => connectedNodeIds.has(node.id));
+
+    console.log(`Graph: ${nodes.length} total nodes, ${connectedNodes.length} connected nodes, ${edges.length} edges`);
+
     // Convert to Cytoscape format
     const elements = [];
     
-    // Add nodes
-    nodes.forEach(node => {
+    // Add only connected nodes
+    connectedNodes.forEach(node => {
         elements.push({
             data: {
                 id: node.id,

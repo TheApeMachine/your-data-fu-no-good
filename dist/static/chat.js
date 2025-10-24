@@ -1,0 +1,152 @@
+// LLM Chat Interface
+
+let chatHistory = [];
+let chatOpen = false;
+
+function toggleChat() {
+    chatOpen = !chatOpen;
+    const chatWidget = document.getElementById('chat-widget');
+    const chatButton = document.getElementById('chat-toggle-btn');
+    
+    if (chatOpen) {
+        chatWidget.classList.remove('hidden');
+        chatButton.innerHTML = '<i class="fas fa-times"></i>';
+    } else {
+        chatWidget.classList.add('hidden');
+        chatButton.innerHTML = '<i class="fas fa-comments"></i>';
+    }
+}
+
+async function sendChatMessage() {
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+    
+    if (!message || !currentDatasetId) return;
+    
+    // Add user message to chat
+    addMessageToChat('user', message);
+    input.value = '';
+    
+    // Show typing indicator
+    addMessageToChat('assistant', '...', true);
+    
+    try {
+        const response = await axios.post(`/api/chat/${currentDatasetId}`, {
+            message,
+            conversationHistory: chatHistory
+        });
+        
+        // Remove typing indicator
+        removeTypingIndicator();
+        
+        // Add assistant response
+        addMessageToChat('assistant', response.data.message);
+        
+        // Show suggestions
+        if (response.data.suggestions && response.data.suggestions.length > 0) {
+            addSuggestionsToChat(response.data.suggestions);
+        }
+        
+        // Store in history
+        chatHistory.push({ role: 'user', content: message });
+        chatHistory.push({ role: 'assistant', content: response.data.message });
+        
+    } catch (error) {
+        removeTypingIndicator();
+        addMessageToChat('assistant', 'Sorry, I encountered an error. Please try again.');
+        console.error('Chat error:', error);
+    }
+}
+
+function addMessageToChat(role, content, isTyping = false) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `chat-message ${role} ${isTyping ? 'typing' : ''}`;
+    
+    if (role === 'user') {
+        messageDiv.innerHTML = `
+            <div class="flex justify-end mb-3">
+                <div class="neu-card px-4 py-2 max-w-[80%]" style="background: var(--accent); color: white;">
+                    ${content}
+                </div>
+            </div>
+        `;
+    } else {
+        messageDiv.innerHTML = `
+            <div class="flex items-start gap-3 mb-3">
+                <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style="background: var(--accent); color: white;">
+                    <i class="fas fa-brain text-sm"></i>
+                </div>
+                <div class="neu-card px-4 py-2 max-w-[80%]" style="color: var(--text-primary);">
+                    ${isTyping ? '<i class="fas fa-spinner fa-spin"></i> Thinking...' : formatMessage(content)}
+                </div>
+            </div>
+        `;
+    }
+    
+    messagesContainer.appendChild(messageDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function removeTypingIndicator() {
+    const typingIndicator = document.querySelector('.chat-message.typing');
+    if (typingIndicator) {
+        typingIndicator.remove();
+    }
+}
+
+function addSuggestionsToChat(suggestions) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const suggestionsDiv = document.createElement('div');
+    suggestionsDiv.className = 'chat-suggestions mb-3';
+    suggestionsDiv.innerHTML = `
+        <div class="flex flex-wrap gap-2 pl-11">
+            ${suggestions.map(s => `
+                <button onclick="askSuggestion('${s.replace(/'/g, "\\'")}')" 
+                        class="neu-button text-sm px-3 py-1" 
+                        style="color: var(--accent);">
+                    ${s}
+                </button>
+            `).join('')}
+        </div>
+    `;
+    messagesContainer.appendChild(suggestionsDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function askSuggestion(question) {
+    document.getElementById('chat-input').value = question;
+    sendChatMessage();
+}
+
+function formatMessage(text) {
+    // Convert newlines to <br>
+    return text.replace(/\n/g, '<br>');
+}
+
+function clearChat() {
+    chatHistory = [];
+    document.getElementById('chat-messages').innerHTML = `
+        <div class="flex items-start gap-3 mb-3">
+            <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style="background: var(--accent); color: white;">
+                <i class="fas fa-brain text-sm"></i>
+            </div>
+            <div class="neu-card px-4 py-2 max-w-[80%]" style="color: var(--text-primary);">
+                👋 Hi! I'm your data analysis assistant. I can help you understand patterns, correlations, and insights in your data. What would you like to know?
+            </div>
+        </div>
+    `;
+}
+
+// Handle Enter key in chat input
+document.addEventListener('DOMContentLoaded', () => {
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+    }
+});
