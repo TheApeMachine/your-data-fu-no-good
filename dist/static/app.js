@@ -63,8 +63,8 @@ async function handleFile(file) {
 
         if (response.data.success) {
             currentDatasetId = response.data.dataset_id;
-            // Wait a bit for analysis to start
-            setTimeout(() => loadDatasetResults(currentDatasetId), 2000);
+            // Trigger analysis
+            triggerAnalysis(currentDatasetId);
         } else {
             alert('Upload failed: ' + response.data.error);
             resetUpload();
@@ -72,6 +72,19 @@ async function handleFile(file) {
     } catch (error) {
         console.error('Upload error:', error);
         alert('Upload failed. Please try again.');
+        resetUpload();
+    }
+}
+
+// Trigger analysis for a dataset
+async function triggerAnalysis(datasetId) {
+    try {
+        await axios.post(`/api/analyze/${datasetId}`);
+        // Wait a moment then load results
+        setTimeout(() => loadDatasetResults(datasetId), 1000);
+    } catch (error) {
+        console.error('Analysis error:', error);
+        alert('Analysis failed. Please try again.');
         resetUpload();
     }
 }

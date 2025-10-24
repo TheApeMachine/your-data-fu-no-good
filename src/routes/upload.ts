@@ -84,39 +84,9 @@ upload.post('/', async (c) => {
       ).run();
     }
 
-    // For small datasets (<100 rows), run analysis synchronously
-    // For large datasets, user needs to trigger analysis via /api/analyze/:id
-    if (rows.length <= 100) {
-      try {
-        // Run analysis
-        await analyzeDataset(datasetId, rows, columns, c.env.DB);
-
-        // Fetch analyses to generate visualizations
-        const analysesResult = await c.env.DB.prepare(`
-          SELECT * FROM analyses WHERE dataset_id = ?
-        `).bind(datasetId).all();
-
-        const analyses = analysesResult.results.map(a => ({
-          ...a,
-          result: JSON.parse(a.result as string)
-        })) as any[];
-
-        // Generate visualizations
-        await generateVisualizations(datasetId, rows, analyses, c.env.DB);
-
-        // Update status to complete
-        await c.env.DB.prepare(`
-          UPDATE datasets SET analysis_status = ?, cleaning_status = ?, visualization_status = ?
-          WHERE id = ?
-        `).bind('complete', 'complete', 'complete', datasetId).run();
-      } catch (error) {
-        console.error('Analysis error:', error);
-        await c.env.DB.prepare(`
-          UPDATE datasets SET analysis_status = ?
-          WHERE id = ?
-        `).bind('error', datasetId).run();
-      }
-    }
+    // Note: Analysis happens via separate /api/analyze/:id endpoint
+    // This prevents blocking the upload response
+    // Frontend should call /api/analyze/:id after upload completes
 
     return c.json({
       success: true,
