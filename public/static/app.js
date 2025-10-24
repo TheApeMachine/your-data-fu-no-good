@@ -222,6 +222,12 @@ function displayDatasetInfo(dataset) {
             </div>
         </div>
     `;
+
+    // Update print metadata
+    const printName = document.getElementById('print-dataset-name');
+    const printTimestamp = document.getElementById('print-timestamp');
+    if (printName) printName.textContent = `Dataset: ${dataset.name} (${dataset.row_count} rows, ${dataset.column_count} columns)`;
+    if (printTimestamp) printTimestamp.textContent = `Generated: ${new Date().toLocaleString()}`;
 }
 
 // Display insights

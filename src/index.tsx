@@ -63,6 +63,67 @@ app.get('/', (c) => {
           .importance-high { border-left: 4px solid #ef4444; }
           .importance-medium { border-left: 4px solid #f59e0b; }
           .importance-low { border-left: 4px solid #10b981; }
+
+          /* Print styles for PDF export */
+          @media print {
+            body { background: white; }
+            header { display: none !important; }
+            #upload-section { display: none !important; }
+            #datasets-section { display: none !important; }
+            .no-print { display: none !important; }
+            
+            #results-section {
+              display: block !important;
+              margin: 0;
+              padding: 20px;
+            }
+
+            .bg-white {
+              box-shadow: none;
+              page-break-inside: avoid;
+            }
+
+            h1, h2, h3 {
+              color: black !important;
+              page-break-after: avoid;
+            }
+
+            .insight-card {
+              page-break-inside: avoid;
+              margin-bottom: 10px;
+            }
+
+            /* Ensure charts print properly */
+            canvas {
+              max-width: 100% !important;
+              height: auto !important;
+              page-break-inside: avoid;
+            }
+
+            /* Add page header */
+            @page {
+              margin: 1cm;
+            }
+
+            #results-section::before {
+              content: "Data Intelligence Report";
+              display: block;
+              font-size: 28px;
+              font-weight: bold;
+              margin-bottom: 10px;
+              padding-bottom: 10px;
+              border-bottom: 2px solid #e5e7eb;
+              color: #1f2937;
+            }
+
+            /* Add timestamp */
+            .print-meta {
+              display: block !important;
+              font-size: 12px;
+              color: #6b7280;
+              margin-bottom: 20px;
+            }
+          }
         </style>
     </head>
     <body class="bg-gray-50">
@@ -120,6 +181,24 @@ app.get('/', (c) => {
 
                 <!-- Results Section -->
                 <div id="results-section" class="hidden">
+                    <!-- Print Metadata (hidden on screen, visible in print) -->
+                    <div class="print-meta hidden">
+                        <p id="print-dataset-name"></p>
+                        <p id="print-timestamp"></p>
+                    </div>
+
+                    <!-- Export Actions -->
+                    <div class="mb-6 flex justify-end gap-3 no-print">
+                        <button onclick="window.print()" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
+                            <i class="fas fa-file-pdf"></i>
+                            Export to PDF
+                        </button>
+                        <button onclick="showSection('upload')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
+                            <i class="fas fa-plus"></i>
+                            New Analysis
+                        </button>
+                    </div>
+
                     <!-- Dataset Info -->
                     <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
                         <h2 class="text-2xl font-bold text-gray-800 mb-4">
