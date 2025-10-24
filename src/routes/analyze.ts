@@ -3,6 +3,7 @@
 import { Hono } from 'hono';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
+import { applyColumnMappings } from '../utils/column-mapper';
 import type { Bindings } from '../types';
 
 const analyze = new Hono<{ Bindings: Bindings }>();
@@ -25,8 +26,32 @@ analyze.post('/:id', async (c) => {
       SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
     `).bind(datasetId).all();
 
-    const rows = rowsResult.results.map(r => JSON.parse(r.data as string));
+    let rows = rowsResult.results.map(r => JSON.parse(r.data as string));
     const columns = JSON.parse(dataset.columns as string);
+
+    // Fetch and apply column mappings (ID -> Name enrichment)
+    const mappingsResult = await c.env.DB.prepare(`
+      SELECT id_column, name_column FROM column_mappings WHERE dataset_id = ?
+    `).bind(datasetId).all();
+
+    if (mappingsResult.results.length > 0) {
+      const mappings = mappingsResult.results.map(m => ({
+        id_column: m.id_column as string,
+        name_column: m.name_column as string,
+        confidence: 1.0
+      }));
+      
+      console.log(`Applying ${mappings.length} column mappings for human-readable analysis...`);
+      rows = applyColumnMappings(rows, mappings);
+      
+      // Update column types to reflect the enrichment
+      for (const mapping of mappings) {
+        const col = columns.find((c: any) => c.name === mapping.id_column);
+        if (col) {
+          col.enriched_by = mapping.name_column;
+        }
+      }
+    }
 
     // Run analysis
     await analyzeDataset(datasetId, rows, columns, c.env.DB);

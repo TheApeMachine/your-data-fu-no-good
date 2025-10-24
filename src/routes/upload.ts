@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { parseCSV, inferColumnTypes } from '../utils/papa-parser';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
+import { detectColumnMappings } from '../utils/column-mapper';
 import type { Bindings } from '../types';
 
 const upload = new Hono<{ Bindings: Bindings }>();
@@ -92,6 +93,23 @@ upload.post('/', async (c) => {
         JSON.stringify(rows[i]),
         0
       ).run();
+    }
+
+    // Detect and store column mappings (ID -> Name relationships)
+    console.log('Detecting column mappings...');
+    const mappings = detectColumnMappings(columns, rows.length);
+    console.log(`Detected ${mappings.length} column mappings`);
+    
+    for (const mapping of mappings) {
+      await c.env.DB.prepare(`
+        INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)
+        VALUES (?, ?, ?, 1)
+      `).bind(
+        datasetId,
+        mapping.id_column,
+        mapping.name_column
+      ).run();
+      console.log(`  Mapped: ${mapping.id_column} -> ${mapping.name_column} (confidence: ${mapping.confidence})`);
     }
 
     // Note: Analysis happens via separate /api/analyze/:id endpoint

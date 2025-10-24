@@ -22,6 +22,16 @@ export async function generateVisualizations(
 ): Promise<void> {
   console.log(`Generating visualizations for dataset ${datasetId}`);
 
+  // Fetch column mappings to add enrichment indicators
+  const mappingsResult = await db.prepare(`
+    SELECT id_column, name_column FROM column_mappings WHERE dataset_id = ?
+  `).bind(datasetId).all();
+
+  const mappingsMap = new Map<string, string>();
+  mappingsResult.results.forEach(m => {
+    mappingsMap.set(m.id_column as string, m.name_column as string);
+  });
+
   let displayOrder = 0;
 
   // Sort analyses by quality score (highest first)
@@ -36,7 +46,7 @@ export async function generateVisualizations(
       continue;
     }
 
-    const viz = await createVisualizationForAnalysis(analysis, rows);
+    const viz = await createVisualizationForAnalysis(analysis, rows, mappingsMap);
     
     if (viz) {
       await db.prepare(`
@@ -59,35 +69,37 @@ export async function generateVisualizations(
 
 function createVisualizationForAnalysis(
   analysis: Analysis,
-  rows: Record<string, any>[]
+  rows: Record<string, any>[],
+  mappingsMap: Map<string, string>
 ): { chartType: string, title: string, config: any, explanation: string } | null {
   
   switch (analysis.analysis_type) {
     case 'statistics':
-      return createStatisticsChart(analysis, rows);
+      return createStatisticsChart(analysis, rows, mappingsMap);
     
     case 'correlation':
-      return createCorrelationChart(analysis, rows);
+      return createCorrelationChart(analysis, rows, mappingsMap);
     
     case 'outlier':
-      return createOutlierChart(analysis, rows);
+      return createOutlierChart(analysis, rows, mappingsMap);
     
     case 'pattern':
-      return createPatternChart(analysis, rows);
+      return createPatternChart(analysis, rows, mappingsMap);
     
     case 'trend':
-      return createTrendChart(analysis, rows);
+      return createTrendChart(analysis, rows, mappingsMap);
     
     default:
       return null;
   }
 }
 
-function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[]) {
+function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const colName = analysis.column_name;
   if (!colName) return null;
 
   const stats = analysis.result;
+  const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
   
   // For numeric columns, show distribution histogram
   if (stats.mean !== undefined) {
@@ -96,8 +108,8 @@ function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[]) 
 
     return {
       chartType: 'bar',
-      title: `Distribution: ${colName}`,
-      explanation: `This histogram shows how values in "${colName}" are distributed. Taller bars mean more data points at that value range.`,
+      title: `Distribution: ${colName}${enrichmentSuffix}`,
+      explanation: `This histogram shows how values in "${colName}" are distributed${enrichmentSuffix ? ' using human-readable names' : ''}. Taller bars mean more data points at that value range.`,
       config: {
         type: 'bar',
         data: {
@@ -147,8 +159,8 @@ function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[]) 
 
   return {
     chartType: 'bar',
-    title: `Top Values: ${colName}`,
-    explanation: `This chart shows the most common values in "${colName}". The tallest bar is the most frequent value.`,
+    title: `Top Values: ${colName}${enrichmentSuffix}`,
+    explanation: `This chart shows the most common values in "${colName}"${enrichmentSuffix ? ' using human-readable names' : ''}. The tallest bar is the most frequent value.`,
     config: {
       type: 'bar',
       data: {
@@ -183,12 +195,15 @@ function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[]) 
   };
 }
 
-function createCorrelationChart(analysis: Analysis, rows: Record<string, any>[]) {
+function createCorrelationChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const result = analysis.result;
   const col1 = result.column1;
   const col2 = result.column2;
   
   if (!col1 || !col2) return null;
+
+  const col1Suffix = mappingsMap.has(col1) ? ` (via ${mappingsMap.get(col1)})` : '';
+  const col2Suffix = mappingsMap.has(col2) ? ` (via ${mappingsMap.get(col2)})` : '';
 
   const points = rows
     .map(r => ({
@@ -202,8 +217,8 @@ function createCorrelationChart(analysis: Analysis, rows: Record<string, any>[])
 
   return {
     chartType: 'scatter',
-    title: `Relationship: ${col1} vs ${col2}`,
-    explanation: `Each dot represents one record. ${correlation > 0 ? 'The upward pattern shows they move together.' : 'The downward pattern shows they move in opposite directions.'}`,
+    title: `Relationship: ${col1}${col1Suffix} vs ${col2}${col2Suffix}`,
+    explanation: `Each dot represents one record${col1Suffix || col2Suffix ? ' using human-readable names' : ''}. ${correlation > 0 ? 'The upward pattern shows they move together.' : 'The downward pattern shows they move in opposite directions.'}`,
     config: {
       type: 'scatter',
       data: {
@@ -239,9 +254,11 @@ function createCorrelationChart(analysis: Analysis, rows: Record<string, any>[])
   };
 }
 
-function createOutlierChart(analysis: Analysis, rows: Record<string, any>[]) {
+function createOutlierChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const colName = analysis.column_name;
   if (!colName) return null;
+
+  const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
 
   const outlierIndices = new Set(analysis.result.indices || []);
   const values = rows.map((r, idx) => ({
@@ -255,8 +272,8 @@ function createOutlierChart(analysis: Analysis, rows: Record<string, any>[]) {
 
   return {
     chartType: 'scatter',
-    title: `Outliers: ${colName}`,
-    explanation: `Red dots are unusual values that stand out from the pattern. Blue dots are normal values.`,
+    title: `Outliers: ${colName}${enrichmentSuffix}`,
+    explanation: `Red dots are unusual values that stand out from the pattern${enrichmentSuffix ? ' (using human-readable names)' : ''}. Blue dots are normal values.`,
     config: {
       type: 'scatter',
       data: {
@@ -302,9 +319,11 @@ function createOutlierChart(analysis: Analysis, rows: Record<string, any>[]) {
   };
 }
 
-function createPatternChart(analysis: Analysis, rows: Record<string, any>[]) {
+function createPatternChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const colName = analysis.column_name;
   if (!colName) return null;
+
+  const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
 
   const topPatterns = analysis.result.topPatterns || [];
   
@@ -315,8 +334,8 @@ function createPatternChart(analysis: Analysis, rows: Record<string, any>[]) {
   
   return {
     chartType: 'pie',
-    title: `Pattern Distribution: ${colName}`,
-    explanation: `Each slice shows what percentage of records have that value. Bigger slices are more common.`,
+    title: `Pattern Distribution: ${colName}${enrichmentSuffix}`,
+    explanation: `Each slice shows what percentage of records have that value${enrichmentSuffix ? ' using human-readable names' : ''}. Bigger slices are more common.`,
     config: {
       type: 'pie',
       data: {
@@ -355,9 +374,11 @@ function createPatternChart(analysis: Analysis, rows: Record<string, any>[]) {
   };
 }
 
-function createTrendChart(analysis: Analysis, rows: Record<string, any>[]) {
+function createTrendChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const colName = analysis.column_name;
   if (!colName) return null;
+
+  const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
 
   const values = rows.map(r => Number(r[colName])).filter(n => !isNaN(n));
   const trend = analysis.result;
@@ -368,8 +389,8 @@ function createTrendChart(analysis: Analysis, rows: Record<string, any>[]) {
 
   return {
     chartType: 'line',
-    title: `Trend: ${colName}`,
-    explanation: `This line shows how "${colName}" changes over time. ${trend.direction === 'up' ? 'The upward slope indicates growth.' : 'The downward slope indicates decline.'}`,
+    title: `Trend: ${colName}${enrichmentSuffix}`,
+    explanation: `This line shows how "${colName}" changes over time${enrichmentSuffix ? ' using human-readable names' : ''}. ${trend.direction === 'up' ? 'The upward slope indicates growth.' : 'The downward slope indicates decline.'}`,
     config: {
       type: 'line',
       data: {

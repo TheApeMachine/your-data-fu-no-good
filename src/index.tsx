@@ -8,6 +8,7 @@ import upload from './routes/upload';
 import datasets from './routes/datasets';
 import analyze from './routes/analyze';
 import relationships from './routes/relationships';
+import mappings from './routes/mappings';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -22,6 +23,7 @@ app.route('/api/upload', upload);
 app.route('/api/datasets', datasets);
 app.route('/api/analyze', analyze);
 app.route('/api/relationships', relationships);
+app.route('/api/mappings', mappings);
 
 // Health check
 app.get('/api/health', (c) => {
@@ -40,18 +42,95 @@ app.get('/', (c) => {
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
         <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+        <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
         <style>
+          :root {
+            --bg-primary: #e0e5ec;
+            --bg-secondary: #ffffff;
+            --text-primary: #2c3e50;
+            --text-secondary: #6b7280;
+            --accent: #3b82f6;
+            --shadow-light: #ffffff;
+            --shadow-dark: #a3b1c6;
+          }
+
+          [data-theme="dark"] {
+            --bg-primary: #1e293b;
+            --bg-secondary: #0f172a;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --accent: #60a5fa;
+            --shadow-light: #2d3e54;
+            --shadow-dark: #0a1120;
+          }
+
+          * {
+            transition: background-color 0.3s, color 0.3s, box-shadow 0.3s;
+          }
+
+          body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+          }
+
+          /* Neumorphism Styles */
+          .neu-card {
+            background: var(--bg-primary);
+            border-radius: 20px;
+            box-shadow: 8px 8px 16px var(--shadow-dark),
+                        -8px -8px 16px var(--shadow-light);
+          }
+
+          .neu-card-inset {
+            background: var(--bg-primary);
+            border-radius: 20px;
+            box-shadow: inset 8px 8px 16px var(--shadow-dark),
+                        inset -8px -8px 16px var(--shadow-light);
+          }
+
+          .neu-button {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            box-shadow: 4px 4px 8px var(--shadow-dark),
+                        -4px -4px 8px var(--shadow-light);
+            border: none;
+            padding: 12px 24px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+
+          .neu-button:hover {
+            box-shadow: 2px 2px 4px var(--shadow-dark),
+                        -2px -2px 4px var(--shadow-light);
+          }
+
+          .neu-button:active {
+            box-shadow: inset 4px 4px 8px var(--shadow-dark),
+                        inset -4px -4px 8px var(--shadow-light);
+          }
+
+          .neu-button-accent {
+            background: linear-gradient(145deg, var(--accent), #2563eb);
+            color: white;
+            box-shadow: 4px 4px 8px var(--shadow-dark),
+                        -4px -4px 8px var(--shadow-light);
+          }
+
           .upload-area {
-            border: 2px dashed #cbd5e1;
+            border: 2px dashed var(--text-secondary);
             transition: all 0.3s;
           }
+
           .upload-area.drag-over {
-            border-color: #3b82f6;
-            background-color: #eff6ff;
+            border-color: var(--accent);
+            background-color: var(--bg-secondary);
           }
+
           .insight-card {
             animation: slideIn 0.5s ease-out;
           }
+
           @keyframes slideIn {
             from {
               opacity: 0;
@@ -62,119 +141,95 @@ app.get('/', (c) => {
               transform: translateY(0);
             }
           }
-          .importance-high { border-left: 4px solid #ef4444; }
-          .importance-medium { border-left: 4px solid #f59e0b; }
-          .importance-low { border-left: 4px solid #10b981; }
 
-          /* Print styles for PDF export */
+          /* Tab Styles */
+          .tab-btn {
+            background: var(--bg-primary);
+            border-radius: 12px;
+            padding: 12px 24px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-primary);
+            box-shadow: 4px 4px 8px var(--shadow-dark),
+                        -4px -4px 8px var(--shadow-light);
+          }
+
+          .tab-btn.active {
+            background: linear-gradient(145deg, var(--accent), #2563eb);
+            color: white;
+            box-shadow: inset 4px 4px 8px rgba(0,0,0,0.2),
+                        inset -4px -4px 8px rgba(255,255,255,0.1);
+          }
+
+          /* Dark mode toggle */
+          .theme-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+          }
+
+          /* Print styles */
           @media print {
             body { background: white; }
-            header { display: none !important; }
-            #upload-section { display: none !important; }
-            #datasets-section { display: none !important; }
             .no-print { display: none !important; }
-            
-            #results-section {
-              display: block !important;
-              margin: 0;
-              padding: 20px;
-            }
-
-            .bg-white {
-              box-shadow: none;
-              page-break-inside: avoid;
-            }
-
-            h1, h2, h3 {
-              color: black !important;
-              page-break-after: avoid;
-            }
-
-            .insight-card {
-              page-break-inside: avoid;
-              margin-bottom: 10px;
-            }
-
-            /* Ensure charts print properly */
-            canvas {
-              max-width: 100% !important;
-              height: auto !important;
-              page-break-inside: avoid;
-            }
-
-            /* Add page header */
-            @page {
-              margin: 1cm;
-            }
-
-            #results-section::before {
-              content: "Data Intelligence Report";
-              display: block;
-              font-size: 28px;
-              font-weight: bold;
-              margin-bottom: 10px;
-              padding-bottom: 10px;
-              border-bottom: 2px solid #e5e7eb;
-              color: #1f2937;
-            }
-
-            /* Add timestamp */
-            .print-meta {
-              display: block !important;
-              font-size: 12px;
-              color: #6b7280;
-              margin-bottom: 20px;
-            }
+            .neu-card { box-shadow: none; border: 1px solid #e5e7eb; }
           }
         </style>
     </head>
-    <body class="bg-gray-50">
-        <div class="min-h-screen">
+    <body>
+        <!-- Theme Toggle -->
+        <button onclick="toggleTheme()" class="theme-toggle neu-button">
+            <i id="theme-icon" class="fas fa-moon"></i>
+        </button>
+
+        <div class="min-h-screen p-8">
             <!-- Header -->
-            <header class="bg-white shadow-sm border-b">
-                <div class="max-w-7xl mx-auto px-4 py-6">
-                    <div class="flex items-center justify-between">
-                        <div>
-                            <h1 class="text-3xl font-bold text-gray-900">
-                                <i class="fas fa-brain text-blue-600 mr-3"></i>
-                                Data Intelligence Platform
-                            </h1>
-                            <p class="text-gray-600 mt-1">Upload → Analyze → Understand. Automated insights from your data.</p>
-                        </div>
-                        <button id="view-datasets" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
-                            <i class="fas fa-database mr-2"></i>My Datasets
-                        </button>
+            <header class="neu-card p-6 mb-8 no-print">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h1 class="text-3xl font-bold">
+                            <i class="fas fa-brain mr-3" style="color: var(--accent);"></i>
+                            Data Intelligence Platform
+                        </h1>
+                        <p class="text-sm mt-2" style="color: var(--text-secondary);">
+                            Upload → Analyze → Understand. Automated insights from your data.
+                        </p>
                     </div>
+                    <button id="view-datasets" class="neu-button">
+                        <i class="fas fa-database mr-2"></i>My Datasets
+                    </button>
                 </div>
             </header>
 
             <!-- Main Content -->
-            <main class="max-w-7xl mx-auto px-4 py-8">
+            <main>
                 <!-- Upload Section -->
                 <div id="upload-section" class="mb-8">
-                    <div class="bg-white rounded-xl shadow-lg p-8">
-                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                            <i class="fas fa-upload mr-2 text-blue-600"></i>
+                    <div class="neu-card p-8">
+                        <h2 class="text-2xl font-bold mb-4">
+                            <i class="fas fa-upload mr-2" style="color: var(--accent);"></i>
                             Upload Your Data
                         </h2>
-                        <p class="text-gray-600 mb-6">
+                        <p class="mb-6" style="color: var(--text-secondary);">
                             Drop a CSV or JSON file below and we'll automatically analyze it, find patterns, 
                             and explain what matters in plain English.
                         </p>
 
-                        <div id="upload-area" class="upload-area rounded-lg p-12 text-center cursor-pointer">
+                        <div id="upload-area" class="upload-area neu-card-inset rounded-lg p-12 text-center cursor-pointer">
                             <input type="file" id="file-input" accept=".csv,.json" class="hidden">
                             <div id="upload-prompt">
-                                <i class="fas fa-cloud-upload-alt text-6xl text-gray-400 mb-4"></i>
-                                <p class="text-xl text-gray-700 mb-2">Drop your file here or click to browse</p>
-                                <p class="text-sm text-gray-500">Supports CSV and JSON files</p>
+                                <i class="fas fa-cloud-upload-alt text-6xl mb-4" style="color: var(--text-secondary);"></i>
+                                <p class="text-xl mb-2">Drop your file here or click to browse</p>
+                                <p class="text-sm" style="color: var(--text-secondary);">Supports CSV and JSON files</p>
                             </div>
                             <div id="upload-progress" class="hidden">
-                                <i class="fas fa-spinner fa-spin text-4xl text-blue-600 mb-4"></i>
-                                <p id="status-message" class="text-lg text-gray-700 font-semibold">Uploading...</p>
-                                <p id="status-detail" class="text-sm text-gray-500 mt-2"></p>
-                                <div class="mt-4 w-64 mx-auto bg-gray-200 rounded-full h-2">
-                                    <div id="progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                <i class="fas fa-spinner fa-spin text-4xl mb-4" style="color: var(--accent);"></i>
+                                <p id="status-message" class="text-lg font-semibold">Uploading...</p>
+                                <p id="status-detail" class="text-sm mt-2" style="color: var(--text-secondary);"></p>
+                                <div class="mt-4 w-64 mx-auto neu-card-inset rounded-full h-3">
+                                    <div id="progress-bar" class="h-3 rounded-full transition-all duration-300" 
+                                         style="width: 0%; background: linear-gradient(90deg, var(--accent), #2563eb);"></div>
                                 </div>
                             </div>
                         </div>
@@ -183,106 +238,129 @@ app.get('/', (c) => {
 
                 <!-- Results Section -->
                 <div id="results-section" class="hidden">
-                    <!-- Print Metadata (hidden on screen, visible in print) -->
-                    <div class="print-meta hidden">
-                        <p id="print-dataset-name"></p>
-                        <p id="print-timestamp"></p>
-                    </div>
-
                     <!-- Export Actions -->
                     <div class="mb-6 flex justify-between items-center no-print">
-                        <div class="flex gap-2">
-                            <button id="tab-insights" onclick="switchTab('insights')" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                        <div class="flex gap-3">
+                            <button id="tab-insights" onclick="switchTab('insights')" class="tab-btn active">
                                 <i class="fas fa-lightbulb mr-2"></i>Insights
                             </button>
-                            <button id="tab-relationships" onclick="switchTab('relationships')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                            <button id="tab-relationships" onclick="switchTab('relationships')" class="tab-btn">
                                 <i class="fas fa-project-diagram mr-2"></i>Relationships
+                            </button>
+                            <button id="tab-mappings" onclick="switchTab('mappings')" class="tab-btn">
+                                <i class="fas fa-link mr-2"></i>Column Mappings
                             </button>
                         </div>
                         <div class="flex gap-3">
-                            <button onclick="window.print()" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
-                                <i class="fas fa-file-pdf"></i>
-                                Export to PDF
+                            <button onclick="window.print()" class="neu-button-accent">
+                                <i class="fas fa-file-pdf mr-2"></i>Export PDF
                             </button>
-                            <button onclick="showSection('upload')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                                <i class="fas fa-plus"></i>
-                                New Analysis
+                            <button onclick="showSection('upload')" class="neu-button">
+                                <i class="fas fa-plus mr-2"></i>New Analysis
                             </button>
                         </div>
                     </div>
 
                     <!-- Dataset Info -->
-                    <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
-                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                            <i class="fas fa-info-circle mr-2 text-blue-600"></i>
+                    <div class="neu-card p-6 mb-6">
+                        <h2 class="text-2xl font-bold mb-4">
+                            <i class="fas fa-info-circle mr-2" style="color: var(--accent);"></i>
                             Dataset Overview
                         </h2>
                         <div id="dataset-info" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
                     </div>
 
-                    <!-- Insights Tab Content -->
+                    <!-- Insights Tab -->
                     <div id="tab-content-insights">
+                        <!-- Search and Filter Bar -->
+                        <div class="neu-card p-4 mb-6 no-print">
+                            <div class="flex gap-3 items-center">
+                                <div class="flex-1 neu-card-inset rounded-lg p-2 flex items-center">
+                                    <i class="fas fa-search mx-3" style="color: var(--text-secondary);"></i>
+                                    <input type="text" id="insight-search" 
+                                           placeholder="Search insights, columns, patterns..." 
+                                           onkeyup="filterInsights(this.value)"
+                                           class="flex-1 bg-transparent border-none outline-none"
+                                           style="color: var(--text-primary);">
+                                </div>
+                                <button onclick="showBookmarked()" class="neu-button" title="Show Bookmarked">
+                                    <i class="fas fa-star mr-2" style="color: #f59e0b;"></i>Bookmarked
+                                </button>
+                                <button onclick="filterInsights('')" class="neu-button" title="Clear Filters">
+                                    <i class="fas fa-redo mr-2"></i>Reset
+                                </button>
+                            </div>
+                            <p id="search-result-count" class="text-sm mt-2" style="color: var(--text-secondary);"></p>
+                        </div>
 
-                    <!-- Visualizations -->
-                    <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
-                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                            <i class="fas fa-chart-line mr-2 text-purple-600"></i>
-                            Visual Insights
-                        </h2>
-                        <div id="visualizations-container" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
+                        <!-- Visualizations -->
+                        <div class="neu-card p-6 mb-6">
+                            <h2 class="text-2xl font-bold mb-4">
+                                <i class="fas fa-chart-line mr-2" style="color: #a855f7;"></i>
+                                Visual Insights
+                            </h2>
+                            <div id="visualizations-container" class="grid grid-cols-1 md:grid-cols-2 gap-6"></div>
+                        </div>
+
+                        <!-- Key Insights -->
+                        <div class="neu-card p-6 mb-6">
+                            <h2 class="text-2xl font-bold mb-4">
+                                <i class="fas fa-lightbulb mr-2" style="color: #f59e0b;"></i>
+                                Key Insights
+                            </h2>
+                            <div id="insights-container" class="space-y-4"></div>
+                        </div>
+
+                        <!-- Sample Data -->
+                        <div class="neu-card p-6">
+                            <h2 class="text-2xl font-bold mb-4">
+                                <i class="fas fa-table mr-2" style="color: #10b981;"></i>
+                                Sample Data
+                            </h2>
+                            <div id="sample-data" class="overflow-x-auto"></div>
+                        </div>
                     </div>
 
-                    <!-- Key Insights -->
-                    <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
-                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                            <i class="fas fa-lightbulb mr-2 text-yellow-500"></i>
-                            Key Insights
-                        </h2>
-                        <div id="insights-container" class="space-y-4"></div>
-                    </div>
-
-                    <!-- Sample Data -->
-                    <div class="bg-white rounded-xl shadow-lg p-6">
-                        <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                            <i class="fas fa-table mr-2 text-green-600"></i>
-                            Sample Data
-                        </h2>
-                        <div id="sample-data" class="overflow-x-auto"></div>
-                    </div>
-                    </div>
-
-                    <!-- Relationships Tab Content -->
+                    <!-- Relationships Tab -->
                     <div id="tab-content-relationships" class="hidden">
-                        <div class="bg-white rounded-xl shadow-lg p-6">
-                            <h2 class="text-2xl font-bold text-gray-800 mb-4">
-                                <i class="fas fa-project-diagram mr-2 text-purple-600"></i>
+                        <div class="neu-card p-6">
+                            <h2 class="text-2xl font-bold mb-4">
+                                <i class="fas fa-project-diagram mr-2" style="color: #a855f7;"></i>
                                 Interactive Relationship Graph
                             </h2>
-                            <p class="text-gray-600 mb-4">
-                                This graph shows how columns relate to each other. Thicker lines mean stronger relationships.
-                                Blue circles are columns, green circles are common values.
+                            <p class="mb-4" style="color: var(--text-secondary);">
+                                This graph shows how columns relate to each other. Click and drag to explore. 
+                                Thicker lines mean stronger relationships.
                             </p>
-                            <div id="graph-container" class="bg-gray-50 rounded-lg p-4" style="height: 600px; position: relative;">
-                                <svg id="relationship-graph" width="100%" height="100%"></svg>
-                            </div>
-                            <div id="graph-legend" class="mt-4 grid grid-cols-3 gap-4 text-sm">
-                                <div><span class="inline-block w-4 h-4 bg-blue-500 rounded-full mr-2"></span>Column</div>
-                                <div><span class="inline-block w-4 h-4 bg-green-500 rounded-full mr-2"></span>Value</div>
-                                <div><span class="inline-block w-3 h-3 border-2 border-purple-500 mr-2"></span>Correlation</div>
-                            </div>
+                            <div id="graph-container" class="neu-card-inset rounded-lg p-4" style="height: 600px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Mappings Tab -->
+                    <div id="tab-content-mappings" class="hidden">
+                        <div class="neu-card p-6">
+                            <h2 class="text-2xl font-bold mb-4">
+                                <i class="fas fa-link mr-2" style="color: #3b82f6;"></i>
+                                Column Mappings
+                            </h2>
+                            <p class="mb-4" style="color: var(--text-secondary);">
+                                These mappings tell the system how to replace ID columns with human-readable names in visualizations.
+                                Auto-detected mappings are marked with a green badge.
+                            </p>
+                            <div id="mappings-container"></div>
                         </div>
                     </div>
                 </div>
 
                 <!-- Datasets List -->
                 <div id="datasets-section" class="hidden">
-                    <div class="bg-white rounded-xl shadow-lg p-6">
+                    <div class="neu-card p-6">
                         <div class="flex items-center justify-between mb-6">
-                            <h2 class="text-2xl font-bold text-gray-800">
-                                <i class="fas fa-database mr-2 text-blue-600"></i>
+                            <h2 class="text-2xl font-bold">
+                                <i class="fas fa-database mr-2" style="color: var(--accent);"></i>
                                 Your Datasets
                             </h2>
-                            <button id="back-to-upload" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                            <button id="back-to-upload" class="neu-button-accent">
                                 <i class="fas fa-plus mr-2"></i>New Upload
                             </button>
                         </div>
@@ -293,6 +371,27 @@ app.get('/', (c) => {
         </div>
 
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+        <script>
+          // Theme management
+          function toggleTheme() {
+            const html = document.documentElement;
+            const currentTheme = html.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            html.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            
+            const icon = document.getElementById('theme-icon');
+            icon.className = newTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
+          }
+
+          // Load saved theme
+          window.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            const icon = document.getElementById('theme-icon');
+            icon.className = savedTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
+          });
+        </script>
         <script src="/static/app.js"></script>
         <script src="/static/graph.js"></script>
     </body>

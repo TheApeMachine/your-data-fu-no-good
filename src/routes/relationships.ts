@@ -68,12 +68,21 @@ relationships.get('/:id', async (c) => {
       }
     }
 
-    // Add correlation edges
+    // Add correlation edges (only strong correlations for dense datasets)
     const correlations = analyses.filter(a => a.analysis_type === 'correlation');
-    for (const corr of correlations) {
+    
+    // If too many correlations, only show the strongest ones
+    const sortedCorrelations = correlations
+      .sort((a, b) => Math.abs(b.result.correlation) - Math.abs(a.result.correlation))
+      .slice(0, Math.min(50, correlations.length)); // Limit to top 50
+
+    for (const corr of sortedCorrelations) {
       const { column1, column2, correlation } = corr.result;
       const source = `col_${column1}`;
       const target = `col_${column2}`;
+
+      // Only show correlations > 0.6 for very dense datasets
+      if (columns.length > 50 && Math.abs(correlation) < 0.7) continue;
 
       edges.push({
         source,

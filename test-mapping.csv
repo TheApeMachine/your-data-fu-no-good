@@ -1,0 +1,11 @@
+skillId,skillName,departmentId,departmentName,proficiencyScore,yearsExperience
+1,JavaScript,10,Engineering,85,3
+2,Python,10,Engineering,90,5
+3,SQL,20,Data Analytics,75,2
+1,JavaScript,30,Product,70,1
+4,Java,10,Engineering,88,4
+2,Python,20,Data Analytics,92,6
+5,CSS,40,Design,80,3
+3,SQL,10,Engineering,78,3
+1,JavaScript,10,Engineering,95,8
+6,React,10,Engineering,82,2
