@@ -108,7 +108,11 @@ app.get('/', (c) => {
                             </div>
                             <div id="upload-progress" class="hidden">
                                 <i class="fas fa-spinner fa-spin text-4xl text-blue-600 mb-4"></i>
-                                <p class="text-lg text-gray-700">Uploading and analyzing...</p>
+                                <p id="status-message" class="text-lg text-gray-700 font-semibold">Uploading...</p>
+                                <p id="status-detail" class="text-sm text-gray-500 mt-2"></p>
+                                <div class="mt-4 w-64 mx-auto bg-gray-200 rounded-full h-2">
+                                    <div id="progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
                             </div>
                         </div>
                     </div>

@@ -1,7 +1,7 @@
 // Upload API route
 
 import { Hono } from 'hono';
-import { parseCSV, inferColumnTypes } from '../utils/csv-parser';
+import { parseCSV, inferColumnTypes } from '../utils/papa-parser';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
 import type { Bindings } from '../types';

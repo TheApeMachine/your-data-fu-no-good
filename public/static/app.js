@@ -52,6 +52,7 @@ async function handleFile(file) {
     // Show progress
     uploadPrompt.classList.add('hidden');
     uploadProgress.classList.remove('hidden');
+    updateStatus('Uploading file...', `${file.name} (${formatFileSize(file.size)})`, 10);
 
     try {
         const formData = new FormData();
@@ -63,30 +64,64 @@ async function handleFile(file) {
 
         if (response.data.success) {
             currentDatasetId = response.data.dataset_id;
+            updateStatus('Upload complete!', `${response.data.row_count} rows, ${response.data.column_count} columns`, 30);
             // Trigger analysis
-            triggerAnalysis(currentDatasetId);
+            setTimeout(() => triggerAnalysis(currentDatasetId), 500);
         } else {
             alert('Upload failed: ' + response.data.error);
             resetUpload();
         }
     } catch (error) {
         console.error('Upload error:', error);
-        alert('Upload failed. Please try again.');
+        const errorMsg = error.response?.data?.error || 'Upload failed. Please try again.';
+        alert(errorMsg);
         resetUpload();
     }
 }
 
 // Trigger analysis for a dataset
 async function triggerAnalysis(datasetId) {
+    updateStatus('Analyzing data...', 'Calculating statistics and finding patterns', 50);
+    
     try {
-        await axios.post(`/api/analyze/${datasetId}`);
-        // Wait a moment then load results
-        setTimeout(() => loadDatasetResults(datasetId), 1000);
+        // Set a 30 second timeout
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Analysis timeout')), 30000)
+        );
+        
+        const analysisPromise = axios.post(`/api/analyze/${datasetId}`);
+        
+        await Promise.race([analysisPromise, timeoutPromise]);
+        
+        updateStatus('Generating visualizations...', 'Creating charts and graphs', 80);
+        setTimeout(() => loadDatasetResults(datasetId), 800);
     } catch (error) {
         console.error('Analysis error:', error);
-        alert('Analysis failed. Please try again.');
+        if (error.message === 'Analysis timeout') {
+            alert('Analysis is taking too long. The dataset may be too complex. Try a smaller file.');
+        } else {
+            alert('Analysis failed: ' + (error.response?.data?.error || error.message));
+        }
         resetUpload();
     }
+}
+
+// Update status message
+function updateStatus(message, detail, progress) {
+    const statusMessage = document.getElementById('status-message');
+    const statusDetail = document.getElementById('status-detail');
+    const progressBar = document.getElementById('progress-bar');
+    
+    if (statusMessage) statusMessage.textContent = message;
+    if (statusDetail) statusDetail.textContent = detail;
+    if (progressBar) progressBar.style.width = progress + '%';
+}
+
+// Format file size
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 // Load dataset results
