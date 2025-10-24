@@ -7,6 +7,7 @@ import type { Bindings } from './types';
 import upload from './routes/upload';
 import datasets from './routes/datasets';
 import analyze from './routes/analyze';
+import relationships from './routes/relationships';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -20,6 +21,7 @@ app.use('/static/*', serveStatic({ root: './public' }));
 app.route('/api/upload', upload);
 app.route('/api/datasets', datasets);
 app.route('/api/analyze', analyze);
+app.route('/api/relationships', relationships);
 
 // Health check
 app.get('/api/health', (c) => {
@@ -188,15 +190,25 @@ app.get('/', (c) => {
                     </div>
 
                     <!-- Export Actions -->
-                    <div class="mb-6 flex justify-end gap-3 no-print">
-                        <button onclick="window.print()" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
-                            <i class="fas fa-file-pdf"></i>
-                            Export to PDF
-                        </button>
-                        <button onclick="showSection('upload')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
-                            <i class="fas fa-plus"></i>
-                            New Analysis
-                        </button>
+                    <div class="mb-6 flex justify-between items-center no-print">
+                        <div class="flex gap-2">
+                            <button id="tab-insights" onclick="switchTab('insights')" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition">
+                                <i class="fas fa-lightbulb mr-2"></i>Insights
+                            </button>
+                            <button id="tab-relationships" onclick="switchTab('relationships')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition">
+                                <i class="fas fa-project-diagram mr-2"></i>Relationships
+                            </button>
+                        </div>
+                        <div class="flex gap-3">
+                            <button onclick="window.print()" class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
+                                <i class="fas fa-file-pdf"></i>
+                                Export to PDF
+                            </button>
+                            <button onclick="showSection('upload')" class="px-6 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition flex items-center gap-2">
+                                <i class="fas fa-plus"></i>
+                                New Analysis
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Dataset Info -->
@@ -207,6 +219,9 @@ app.get('/', (c) => {
                         </h2>
                         <div id="dataset-info" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
                     </div>
+
+                    <!-- Insights Tab Content -->
+                    <div id="tab-content-insights">
 
                     <!-- Visualizations -->
                     <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
@@ -234,6 +249,29 @@ app.get('/', (c) => {
                         </h2>
                         <div id="sample-data" class="overflow-x-auto"></div>
                     </div>
+                    </div>
+
+                    <!-- Relationships Tab Content -->
+                    <div id="tab-content-relationships" class="hidden">
+                        <div class="bg-white rounded-xl shadow-lg p-6">
+                            <h2 class="text-2xl font-bold text-gray-800 mb-4">
+                                <i class="fas fa-project-diagram mr-2 text-purple-600"></i>
+                                Interactive Relationship Graph
+                            </h2>
+                            <p class="text-gray-600 mb-4">
+                                This graph shows how columns relate to each other. Thicker lines mean stronger relationships.
+                                Blue circles are columns, green circles are common values.
+                            </p>
+                            <div id="graph-container" class="bg-gray-50 rounded-lg p-4" style="height: 600px; position: relative;">
+                                <svg id="relationship-graph" width="100%" height="100%"></svg>
+                            </div>
+                            <div id="graph-legend" class="mt-4 grid grid-cols-3 gap-4 text-sm">
+                                <div><span class="inline-block w-4 h-4 bg-blue-500 rounded-full mr-2"></span>Column</div>
+                                <div><span class="inline-block w-4 h-4 bg-green-500 rounded-full mr-2"></span>Value</div>
+                                <div><span class="inline-block w-3 h-3 border-2 border-purple-500 mr-2"></span>Correlation</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Datasets List -->
@@ -256,6 +294,7 @@ app.get('/', (c) => {
 
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
         <script src="/static/app.js"></script>
+        <script src="/static/graph.js"></script>
     </body>
     </html>
   `);
