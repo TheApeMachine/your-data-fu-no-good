@@ -84,24 +84,13 @@ async function triggerAnalysis(datasetId) {
     updateStatus('Analyzing data...', 'Calculating statistics and finding patterns', 50);
     
     try {
-        // Set a 30 second timeout
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Analysis timeout')), 30000)
-        );
-        
-        const analysisPromise = axios.post(`/api/analyze/${datasetId}`);
-        
-        await Promise.race([analysisPromise, timeoutPromise]);
+        await axios.post(`/api/analyze/${datasetId}`);
         
         updateStatus('Generating visualizations...', 'Creating charts and graphs', 80);
         setTimeout(() => loadDatasetResults(datasetId), 800);
     } catch (error) {
         console.error('Analysis error:', error);
-        if (error.message === 'Analysis timeout') {
-            alert('Analysis is taking too long. The dataset may be too complex. Try a smaller file.');
-        } else {
-            alert('Analysis failed: ' + (error.response?.data?.error || error.message));
-        }
+        alert('Analysis failed: ' + (error.response?.data?.error || error.message));
         resetUpload();
     }
 }
