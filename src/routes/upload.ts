@@ -82,17 +82,19 @@ upload.post('/', async (c) => {
 
     const datasetId = datasetResult.meta.last_row_id as number;
 
-    // Insert data rows (batch insert)
-    for (let i = 0; i < rows.length; i++) {
-      await c.env.DB.prepare(`
+    // Insert data rows using D1's batch API (much faster!)
+    const statements = rows.map((row, i) => 
+      c.env.DB.prepare(`
         INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
         VALUES (?, ?, ?, ?)
-      `).bind(
-        datasetId,
-        i,
-        JSON.stringify(rows[i]),
-        0
-      ).run();
+      `).bind(datasetId, i, JSON.stringify(row), 0)
+    );
+    
+    // Execute in batches of 100
+    const batchSize = 100;
+    for (let i = 0; i < statements.length; i += batchSize) {
+      const batch = statements.slice(i, i + batchSize);
+      await c.env.DB.batch(batch);
     }
 
     // Detect and store column mappings (ID -> Name relationships)

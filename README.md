@@ -198,7 +198,16 @@ git commit -m "Initial commit"
 
 # Run migrations (local D1)
 npx wrangler d1 migrations apply webapp-production --local
+
+# Configure OpenAI API Key (for LLM Chat feature)
+# Create .dev.vars file with your API key:
+echo "OPENAI_API_KEY=sk-your-api-key-here" > .dev.vars
+echo "OPENAI_MODEL=gpt-4o-mini" >> .dev.vars
+
+# Get your API key from: https://platform.openai.com/api-keys
 ```
+
+**Important:** The `.dev.vars` file is in `.gitignore` and will NOT be committed.
 
 ### Development Server
 ```bash

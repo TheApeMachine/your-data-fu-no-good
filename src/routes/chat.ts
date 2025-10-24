@@ -1,6 +1,7 @@
-// LLM Chat Interface for Conversational Insights
+// LLM Chat Interface with OpenAI Integration
 
 import { Hono } from 'hono';
+import { stream } from 'hono/streaming';
 import type { Bindings } from '../types';
 
 const chat = new Hono<{ Bindings: Bindings }>();
@@ -8,7 +9,16 @@ const chat = new Hono<{ Bindings: Bindings }>();
 chat.post('/:datasetId', async (c) => {
   try {
     const datasetId = c.req.param('datasetId');
-    const { message, conversationHistory } = await c.req.json();
+    const { message, conversationHistory = [] } = await c.req.json();
+
+    // Check if OpenAI API key is configured
+    const apiKey = c.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return c.json({ 
+        error: 'OpenAI API key not configured. Please add OPENAI_API_KEY to your environment variables.',
+        message: getFallbackResponse(message)
+      }, 500);
+    }
 
     // Fetch dataset context
     const dataset = await c.env.DB.prepare(`
@@ -48,107 +58,148 @@ Columns: ${dataset.column_count}
 ${context}
 
 Your role:
-- Explain findings in plain English
+- Explain findings in plain, conversational English
 - Answer questions about patterns, correlations, outliers
+- Provide specific numbers and examples from the data
 - Suggest what to investigate next
-- Provide statistical context when relevant
-- Be concise but thorough
+- Be concise but thorough (max 3-4 paragraphs)
+- Use bullet points for lists
 
 If asked about specific insights not in the context, politely explain what data you have access to.`;
 
-    // Call OpenAI-compatible API (you'll need to provide an API endpoint)
-    // For now, return a mock response structure
-    const response = {
-      message: `I understand you're asking: "${message}". Let me analyze the data...
-      
-Based on the ${analyses.length} insights I've found in your dataset with ${dataset.row_count} rows:
+    // Build messages array
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...conversationHistory,
+      { role: 'user', content: message }
+    ];
 
-${generateInsightSummary(analyses, message)}
+    // Call OpenAI API
+    const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: 1000,
+        temperature: 0.7
+      })
+    });
 
-Would you like me to dive deeper into any specific finding?`,
-      suggestions: [
-        "What are the strongest correlations?",
-        "Show me unusual patterns",
-        "Which columns have the most outliers?",
-        "Explain the most important finding"
-      ]
-    };
+    if (!openaiResponse.ok) {
+      const error = await openaiResponse.text();
+      console.error('OpenAI API error:', error);
+      return c.json({ 
+        error: 'Failed to get response from OpenAI',
+        message: getFallbackResponse(message)
+      }, 500);
+    }
 
-    return c.json(response);
+    const data = await openaiResponse.json() as any;
+    const assistantMessage = data.choices[0].message.content;
+
+    // Generate smart suggestions based on question and response
+    const suggestions = generateSuggestions(message, analyses);
+
+    return c.json({
+      message: assistantMessage,
+      suggestions
+    });
 
   } catch (error) {
     console.error('Chat error:', error);
-    return c.json({ error: 'Chat failed: ' + (error as Error).message }, 500);
+    return c.json({ 
+      error: 'Chat failed: ' + (error as Error).message,
+      message: 'I encountered an error. Please try asking your question differently.'
+    }, 500);
   }
 });
 
 function buildAnalysisContext(dataset: any, columns: any[], analyses: any[]): string {
-  let context = `\nColumns:\n`;
-  columns.slice(0, 20).forEach(col => {
+  let context = `\nColumns (showing first 30):\n`;
+  columns.slice(0, 30).forEach(col => {
     context += `- ${col.name} (${col.type}, ${col.unique_count} unique values)\n`;
   });
   
-  if (columns.length > 20) {
-    context += `... and ${columns.length - 20} more columns\n`;
+  if (columns.length > 30) {
+    context += `... and ${columns.length - 30} more columns\n`;
   }
 
-  context += `\nTop Insights:\n`;
+  context += `\nTop ${Math.min(20, analyses.length)} Insights (sorted by quality):\n`;
   analyses.forEach((a, i) => {
-    context += `${i + 1}. ${a.type.toUpperCase()}`;
+    context += `\n${i + 1}. ${a.type.toUpperCase()}`;
     if (a.column) context += ` on "${a.column}"`;
-    context += `: ${a.explanation}\n`;
-    context += `   (${a.importance} importance, ${Math.round(a.confidence * 100)}% confidence, quality: ${a.quality_score?.toFixed(0) || 'N/A'})\n`;
+    context += `:\n`;
+    context += `   ${a.explanation}\n`;
+    context += `   Importance: ${a.importance}, Confidence: ${Math.round(a.confidence * 100)}%, Quality: ${a.quality_score?.toFixed(0) || 'N/A'}\n`;
+    
+    // Add specific details for different types
+    if (a.type === 'correlation' && a.result.correlation) {
+      context += `   Correlation coefficient: ${a.result.correlation.toFixed(3)}\n`;
+    }
+    if (a.type === 'outlier' && a.result.count) {
+      context += `   Outliers found: ${a.result.count} rows\n`;
+    }
   });
 
   return context;
 }
 
-function generateInsightSummary(analyses: any[], userQuestion: string): string {
-  const questionLower = userQuestion.toLowerCase();
+function generateSuggestions(userMessage: string, analyses: any[]): string[] {
+  const messageLower = userMessage.toLowerCase();
+  const suggestions: string[] = [];
+
+  // If they asked about correlations, suggest other analysis types
+  if (messageLower.includes('correlat') || messageLower.includes('relation')) {
+    suggestions.push("Are there any unusual outliers?");
+    suggestions.push("What patterns exist in categorical data?");
+  } 
+  // If they asked about outliers, suggest correlations
+  else if (messageLower.includes('outlier') || messageLower.includes('unusual')) {
+    suggestions.push("What are the strongest correlations?");
+    suggestions.push("Show me trends over time");
+  }
+  // If they asked about patterns, suggest trends
+  else if (messageLower.includes('pattern')) {
+    suggestions.push("Are there any trends in the data?");
+    suggestions.push("Which columns are most correlated?");
+  }
+  // Default suggestions
+  else {
+    suggestions.push("What's the most important finding?");
+    suggestions.push("Which columns have outliers?");
+    suggestions.push("Show me strong correlations");
+  }
+
+  // Add a "dive deeper" suggestion if we have high-quality insights
+  const highQuality = analyses.filter(a => (a.quality_score || 0) > 70);
+  if (highQuality.length > 0 && suggestions.length < 4) {
+    suggestions.push(`Tell me more about ${highQuality[0].column || 'the top finding'}`);
+  }
+
+  return suggestions.slice(0, 3); // Return max 3 suggestions
+}
+
+function getFallbackResponse(message: string): string {
+  const messageLower = message.toLowerCase();
   
-  // Check for correlation questions
-  if (questionLower.includes('correlat') || questionLower.includes('relation')) {
-    const correlations = analyses.filter(a => a.type === 'correlation');
-    if (correlations.length > 0) {
-      const strongest = correlations[0];
-      return `The strongest correlation is between ${strongest.result.column1} and ${strongest.result.column2} with a coefficient of ${strongest.result.correlation.toFixed(2)}. ${strongest.explanation}`;
-    }
+  if (messageLower.includes('correlat') || messageLower.includes('relation')) {
+    return "I found several correlations in your data. Check the 'Insights' tab and search for 'correlation' to see the strongest relationships between columns.";
   }
   
-  // Check for outlier questions
-  if (questionLower.includes('outlier') || questionLower.includes('unusual') || questionLower.includes('anomal')) {
-    const outliers = analyses.filter(a => a.type === 'outlier');
-    if (outliers.length > 0) {
-      return `I found outliers in ${outliers.length} columns. The most significant is in "${outliers[0].column}": ${outliers[0].explanation}`;
-    }
+  if (messageLower.includes('outlier') || messageLower.includes('unusual')) {
+    return "To see outliers, go to the 'Insights' tab and search for 'outlier'. I've highlighted unusual values in several columns.";
   }
 
-  // Check for pattern questions
-  if (questionLower.includes('pattern') || questionLower.includes('common')) {
-    const patterns = analyses.filter(a => a.type === 'pattern');
-    if (patterns.length > 0) {
-      return `I discovered ${patterns.length} significant patterns. The strongest is in "${patterns[0].column}": ${patterns[0].explanation}`;
-    }
+  if (messageLower.includes('pattern')) {
+    return "Patterns have been detected in your categorical columns. Search for 'pattern' in the Insights tab to see frequency distributions.";
   }
 
-  // Check for trend questions
-  if (questionLower.includes('trend') || questionLower.includes('chang') || questionLower.includes('over time')) {
-    const trends = analyses.filter(a => a.type === 'trend');
-    if (trends.length > 0) {
-      return `I detected ${trends.length} trends. The most notable is in "${trends[0].column}": ${trends[0].explanation}`;
-    }
-  }
-
-  // Check for "most important" questions
-  if (questionLower.includes('important') || questionLower.includes('key') || questionLower.includes('main')) {
-    const highImportance = analyses.filter(a => a.importance === 'high');
-    if (highImportance.length > 0) {
-      return `The most important finding is: ${highImportance[0].explanation} (${Math.round(highImportance[0].confidence * 100)}% confident)`;
-    }
-  }
-
-  // Default response
-  return `I have access to ${analyses.length} insights across your dataset. The highest quality finding is: ${analyses[0].explanation}`;
+  return "I'm currently operating in fallback mode. To enable full AI chat, please configure your OpenAI API key in the .dev.vars file (for local) or as an environment variable (for production).";
 }
 
 export default chat;

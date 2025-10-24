@@ -2,6 +2,8 @@
 
 export type Bindings = {
   DB: D1Database;
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;
 };
 
 export interface Dataset {
