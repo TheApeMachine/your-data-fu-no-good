@@ -11,6 +11,7 @@ import analyze from './routes/analyze';
 import relationships from './routes/relationships';
 import mappings from './routes/mappings';
 import chat from './routes/chat';
+import clean from './routes/clean';
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -102,6 +103,7 @@ app.route('/api/analyze', analyze);
 app.route('/api/relationships', relationships);
 app.route('/api/mappings', mappings);
 app.route('/api/chat', chat);
+app.route('/api/clean', clean);
 
 // Health check
 app.get('/api/health', (c) => {
@@ -455,6 +457,9 @@ app.get('/', (c) => {
                             </button>
                         </div>
                         <div class="flex gap-3">
+                            <button onclick="openCleaningModal(currentDatasetId)" class="neu-button" title="Clean this dataset">
+                                <i class="fas fa-broom mr-2"></i>Clean Data
+                            </button>
                             <button onclick="window.print()" class="neu-button-accent">
                                 <i class="fas fa-file-pdf mr-2"></i>Export PDF
                             </button>
@@ -613,6 +618,90 @@ app.get('/', (c) => {
             <i class="fas fa-comments text-xl"></i>
         </button>
 
+        <!-- Data Cleaning Modal -->
+        <div id="cleaning-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center no-print" style="z-index: 1001;">
+            <div class="neu-card p-6 rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold" style="color: var(--text-primary);">
+                        <i class="fas fa-broom mr-2" style="color: var(--accent);"></i>
+                        Clean Data
+                    </h2>
+                    <button onclick="closeCleaningModal()" class="neu-button p-2">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <p class="mb-6" style="color: var(--text-secondary);">
+                    Choose a cleaning level to remove problematic rows and improve data quality. 
+                    A new cleaned dataset will be created (original preserved).
+                </p>
+
+                <!-- Cleaning Level Selector -->
+                <div class="mb-6">
+                    <label class="block text-sm font-semibold mb-3" style="color: var(--text-primary);">
+                        Cleaning Level
+                    </label>
+                    <div class="grid grid-cols-3 gap-3 mb-3">
+                        <button id="clean-level-light" onclick="selectCleaningLevel('light')" class="neu-button p-3 text-center">
+                            <i class="fas fa-feather text-xl mb-2" style="color: #10b981;"></i>
+                            <div class="font-semibold">Light</div>
+                            <div class="text-xs mt-1" style="color: var(--text-secondary);">Safe</div>
+                        </button>
+                        <button id="clean-level-standard" onclick="selectCleaningLevel('standard')" class="neu-button p-3 text-center">
+                            <i class="fas fa-check-circle text-xl mb-2" style="color: #3b82f6;"></i>
+                            <div class="font-semibold">Standard</div>
+                            <div class="text-xs mt-1" style="color: var(--text-secondary);">Recommended</div>
+                        </button>
+                        <button id="clean-level-aggressive" onclick="selectCleaningLevel('aggressive')" class="neu-button p-3 text-center">
+                            <i class="fas fa-bolt text-xl mb-2" style="color: #ef4444;"></i>
+                            <div class="font-semibold">Aggressive</div>
+                            <div class="text-xs mt-1" style="color: var(--text-secondary);">Caution</div>
+                        </button>
+                    </div>
+                    <p id="clean-level-description" class="text-sm p-3 rounded neu-card-inset" style="color: var(--text-secondary);"></p>
+                </div>
+
+                <!-- Standard Level Options -->
+                <div id="standard-options" class="mb-6 hidden">
+                    <label class="block text-sm font-semibold mb-3" style="color: var(--text-primary);">
+                        Key Columns (Standard & Aggressive)
+                    </label>
+                    <div id="key-columns-selector" class="neu-card-inset p-3 rounded-lg"></div>
+                </div>
+
+                <!-- Aggressive Options -->
+                <div id="aggressive-options" class="mb-6 hidden">
+                    <label class="block text-sm font-semibold mb-3" style="color: var(--text-primary);">
+                        Aggressive Cleaning Options
+                    </label>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 p-2 rounded neu-card-inset cursor-pointer">
+                            <input type="checkbox" id="remove-outliers" checked class="form-checkbox">
+                            <span class="text-sm" style="color: var(--text-primary);">
+                                Remove statistical outliers (extreme values)
+                            </span>
+                        </label>
+                        <label class="flex items-center gap-2 p-2 rounded neu-card-inset cursor-pointer">
+                            <input type="checkbox" id="remove-rare-categories" checked class="form-checkbox">
+                            <span class="text-sm" style="color: var(--text-primary);">
+                                Remove rare category values (<1% frequency)
+                            </span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex gap-3 justify-end">
+                    <button onclick="closeCleaningModal()" class="neu-button px-6 py-3">
+                        <i class="fas fa-times mr-2"></i>Cancel
+                    </button>
+                    <button id="execute-clean-btn" onclick="executeCleaningData()" class="neu-button-accent px-6 py-3">
+                        <i class="fas fa-play mr-2"></i>Clean Data
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
         <script>
           // Theme management
@@ -639,6 +728,7 @@ app.get('/', (c) => {
         <script src="/static/graph.js"></script>
         <script src="/static/chat.js"></script>
         <script src="/static/mongodb.js"></script>
+        <script src="/static/cleaner.js"></script>
     </body>
     </html>
   `);
