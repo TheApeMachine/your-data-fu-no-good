@@ -64,6 +64,36 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 - **Color-Coded** - Blue (columns), Green (values), Purple (correlations)
 - **Weighted Edges** - Thickness represents correlation strength
 
+#### 6. **AI Chat Assistant** (NEW! 🎉)
+- **OpenAI GPT-4o-mini** - Conversational data analysis
+- **Function Calling** - 7 tools for database queries:
+  1. `get_outlier_columns` - Find outliers with counts/percentages
+  2. `get_correlation_analysis` - Query correlations with filtering
+  3. `get_column_statistics` - Detailed column statistics
+  4. `search_analyses` - Search by type or keyword
+  5. `get_data_sample` - View actual data rows (max 20)
+  6. `get_missing_values` - Missing data detection
+  7. `suggest_data_cleaning` - AI-powered cleaning suggestions
+- **Specific Answers** - Returns actual database values, not generic advice
+- **Smart Suggestions** - Follow-up questions after each response
+- **Conversation History** - Maintains context across messages
+- **50% Token Savings** - Tools query on-demand vs large context
+
+**Example Queries:**
+```
+"Which columns have outliers?" 
+→ "sales_volume has 625 outliers (16.4%), sales_total_credits has 679..."
+
+"Tell me about sales_volume"
+→ "Mean: 118,855.76, Median: 5,000, Outliers: 625 (16.4%)..."
+
+"Suggest data cleaning steps"
+→ "1. Sales Volume: Remove/cap 625 outliers (16.4%)..."
+
+"Show me 5 rows"
+→ [Displays actual data with all columns]
+```
+
 ---
 
 ## 📊 Data Architecture
@@ -355,21 +385,36 @@ box-shadow:
 - `POST /api/mappings` - Create manual mapping
 - `DELETE /api/mappings/:id` - Delete mapping
 
+### AI Chat (NEW! 🎉)
+- `POST /api/chat/:datasetId` - Chat with AI assistant
+  - Body: `{ message: string, conversationHistory: array }`
+  - Returns: `{ message: string, suggestions: string[] }`
+  - Uses OpenAI function calling with 7 database query tools
+  - Response time: 2-7 seconds (depending on tool complexity)
+
 ---
 
 ## 🎯 Roadmap / Future Enhancements
 
-### Potential Features
-1. **Natural Language Query** - "Show me correlations above 0.8"
-2. **Data Comparison** - Compare two dataset uploads
-3. **Advanced Clustering** - Community detection in network graphs
-4. **Export Formats** - Excel, JSON, CSV for results
-5. **Collaborative Bookmarks** - Share bookmarked insights via URL
-6. **Custom Thresholds** - User-configurable quality score filters
-7. **AI Summary** - LLM-generated executive summary of findings
-8. **Scheduled Analysis** - Re-analyze datasets on schedule
-9. **Multi-file Upload** - Merge multiple CSVs
-10. **Custom Visualizations** - User-defined chart types
+### Completed Recently ✅
+1. ~~**AI Chat Assistant**~~ - Conversational data analysis with OpenAI (DONE!)
+2. ~~**Function Calling**~~ - 7 tools for database queries (DONE!)
+3. ~~**Data Cleaning Suggestions**~~ - AI-powered recommendations (DONE!)
+4. ~~**Data Sample Viewing**~~ - See actual rows via chat (DONE!)
+
+### In Progress ⏳
+1. **Streaming Responses** - Real-time token-by-token chat
+2. **Data Cleaning Execution** - Apply suggested cleaning operations
+3. **Tool Result Caching** - Cache frequent queries for speed
+
+### Planned Features 📋
+4. **Natural Language → Visualization** - "Show me sales by region" generates chart
+5. **Data Cleaning Toggle** - Preview + apply/revert functionality
+6. **Custom Calculated Columns** - Config interface with suggestions
+7. **Multi-file Merging** - Auto-detect join relationships
+8. **Time Series Analysis** - Seasonality, forecasting, trends
+9. **Advanced Clustering** - Community detection in network graphs
+10. **Export Formats** - Excel, JSON, CSV for results
 
 ---
 
