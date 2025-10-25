@@ -134,6 +134,28 @@ const tools = [
         }
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_mongodb_query',
+      description: 'Generate MongoDB query or aggregation pipeline based on natural language description. Use this when user wants to query MongoDB data or create aggregation pipelines.',
+      parameters: {
+        type: 'object',
+        properties: {
+          description: {
+            type: 'string',
+            description: 'Natural language description of what the user wants to query (e.g., "Get all active users from last month" or "Group sales by category and sum totals")'
+          },
+          query_type: {
+            type: 'string',
+            description: 'Type of MongoDB operation',
+            enum: ['find', 'aggregate']
+          }
+        },
+        required: ['description', 'query_type']
+      }
+    }
   }
 ];
 
@@ -402,6 +424,94 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
   };
 }
 
+async function executeGenerateMongoDBQuery(db: any, datasetId: string, args: any, apiKey: string, model: string) {
+  const { description, query_type } = args;
+  
+  // Build a specialized prompt for MongoDB query generation
+  const mongoPrompt = `You are a MongoDB query expert. Generate a valid MongoDB ${query_type === 'aggregate' ? 'aggregation pipeline' : 'query'} based on this description:
+
+"${description}"
+
+Guidelines:
+1. For 'find' queries: Return a valid MongoDB query object (JSON)
+2. For 'aggregate' pipelines: Return a valid MongoDB aggregation pipeline array (JSON)
+3. Use common MongoDB operators: $match, $group, $project, $sort, $limit, $lookup, $unwind, etc.
+4. Include helpful comments explaining each stage
+5. Make realistic assumptions about field names if not specified
+6. Return ONLY valid JSON - no markdown, no extra text
+
+Examples:
+Find query: {"status": "active", "createdAt": {"$gte": "2024-01-01"}}
+Aggregate pipeline: [{"$match": {"status": "active"}}, {"$group": {"_id": "$category", "total": {"$sum": "$amount"}}}]
+
+Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
+
+  try {
+    // Call OpenAI to generate the query
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You are a MongoDB query expert. Generate valid MongoDB queries and pipelines.' },
+          { role: 'user', content: mongoPrompt }
+        ],
+        max_tokens: 1000,
+        temperature: 0.3 // Lower temperature for more precise code generation
+      })
+    });
+
+    if (!openaiResponse.ok) {
+      return {
+        error: 'Failed to generate MongoDB query',
+        description
+      };
+    }
+
+    const data = await openaiResponse.json();
+    const generatedText = data.choices?.[0]?.message?.content || '';
+    
+    // Try to extract JSON from the response
+    let queryJson = generatedText.trim();
+    
+    // Remove markdown code blocks if present
+    queryJson = queryJson.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    // Validate JSON
+    let parsed;
+    try {
+      parsed = JSON.parse(queryJson);
+    } catch (e) {
+      return {
+        error: 'Generated query is not valid JSON',
+        raw_output: generatedText,
+        description
+      };
+    }
+
+    return {
+      query_type,
+      description,
+      generated_query: parsed,
+      explanation: `Generated MongoDB ${query_type === 'aggregate' ? 'aggregation pipeline' : 'query'} based on: "${description}"`,
+      raw_json: queryJson,
+      usage_example: query_type === 'aggregate' 
+        ? 'Use this in MongoDB import: paste into "Aggregation Pipeline" field'
+        : 'Use this in MongoDB import: paste into "Query" field'
+    };
+
+  } catch (error: any) {
+    return {
+      error: error.message || 'Failed to generate MongoDB query',
+      description
+    };
+  }
+}
+
 // Streaming chat endpoint
 chat.post('/:datasetId/stream', async (c) => {
   const datasetId = c.req.param('datasetId');
@@ -558,6 +668,9 @@ You have access to tools to query specific analyses. Use tools to get specific d
               case 'suggest_data_cleaning':
                 toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
                 break;
+              case 'generate_mongodb_query':
+                toolResult = await executeGenerateMongoDBQuery(c.env.DB, datasetId, functionArgs, apiKey, model);
+                break;
               default:
                 toolResult = { error: `Unknown function: ${functionName}` };
             }
@@ -633,6 +746,7 @@ You have access to tools to query specific analyses:
 - get_data_sample: Get sample rows from the dataset
 - get_missing_values: Find columns with missing data
 - suggest_data_cleaning: Get data cleaning suggestions
+- generate_mongodb_query: Generate MongoDB queries/pipelines from natural language
 
 Your role:
 - Use tools to get specific data when asked
@@ -640,6 +754,7 @@ Your role:
 - Be concise but thorough (max 3-4 paragraphs)
 - Use bullet points for lists
 - Always cite specific results from tool calls
+- When user asks about MongoDB queries, use generate_mongodb_query tool
 
 When users ask questions, use the appropriate tools to get actual data.`;
 
@@ -741,6 +856,9 @@ When users ask questions, use the appropriate tools to get actual data.`;
                 break;
               case 'suggest_data_cleaning':
                 toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'generate_mongodb_query':
+                toolResult = await executeGenerateMongoDBQuery(c.env.DB, datasetId, functionArgs, apiKey, model);
                 break;
               default:
                 toolResult = { error: `Unknown function: ${functionName}` };

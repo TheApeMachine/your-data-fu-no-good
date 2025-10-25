@@ -247,7 +247,8 @@ function addToolCallBadges(toolCalls) {
         'search_analyses': 'fa-search',
         'get_data_sample': 'fa-table',
         'get_missing_values': 'fa-question-circle',
-        'suggest_data_cleaning': 'fa-broom'
+        'suggest_data_cleaning': 'fa-broom',
+        'generate_mongodb_query': 'fa-database'
     };
     
     // Human-readable tool names
@@ -258,7 +259,8 @@ function addToolCallBadges(toolCalls) {
         'search_analyses': 'Search',
         'get_data_sample': 'Data Sample',
         'get_missing_values': 'Missing Values',
-        'suggest_data_cleaning': 'Cleaning'
+        'suggest_data_cleaning': 'Cleaning',
+        'generate_mongodb_query': 'MongoDB Query'
     };
     
     badgesDiv.innerHTML = `
