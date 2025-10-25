@@ -1,7 +1,6 @@
-// LLM Chat Interface with OpenAI Integration
+// LLM Chat Interface with OpenAI API
 
 import { Hono } from 'hono';
-import { stream } from 'hono/streaming';
 import type { Bindings } from '../types';
 
 const chat = new Hono<{ Bindings: Bindings }>();
@@ -13,9 +12,9 @@ chat.post('/:datasetId', async (c) => {
 
     // Check if OpenAI API key is configured
     const apiKey = c.env.OPENAI_API_KEY;
-    if (!apiKey) {
+    if (!apiKey || apiKey.includes('your-openai-api-key')) {
       return c.json({ 
-        error: 'OpenAI API key not configured. Please add OPENAI_API_KEY to your environment variables.',
+        error: 'OpenAI API key not configured',
         message: getFallbackResponse(message)
       }, 500);
     }
@@ -74,8 +73,11 @@ If asked about specific insights not in the context, politely explain what data 
       { role: 'user', content: message }
     ];
 
-    // Call OpenAI API
+    // Call OpenAI API with proper error handling
     const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
+    
+    console.log(`Calling OpenAI API with model: ${model}`);
+    
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -90,17 +92,49 @@ If asked about specific insights not in the context, politely explain what data 
       })
     });
 
+    // Get response text first for better error handling
+    const responseText = await openaiResponse.text();
+    
     if (!openaiResponse.ok) {
-      const error = await openaiResponse.text();
-      console.error('OpenAI API error:', error);
+      console.error('OpenAI API error status:', openaiResponse.status);
+      console.error('OpenAI API error response:', responseText);
+      
+      // Parse error if possible
+      let errorMessage = 'Failed to get response from OpenAI';
+      try {
+        const errorData = JSON.parse(responseText);
+        errorMessage = errorData.error?.message || errorMessage;
+      } catch {
+        // Keep default message
+      }
+      
       return c.json({ 
-        error: 'Failed to get response from OpenAI',
+        error: errorMessage,
         message: getFallbackResponse(message)
       }, 500);
     }
 
-    const data = await openaiResponse.json() as any;
-    const assistantMessage = data.choices[0].message.content;
+    // Parse successful response
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      console.error('Failed to parse OpenAI response:', responseText);
+      return c.json({ 
+        error: 'Invalid response from OpenAI',
+        message: getFallbackResponse(message)
+      }, 500);
+    }
+
+    const assistantMessage = data.choices?.[0]?.message?.content;
+    
+    if (!assistantMessage) {
+      console.error('No message in OpenAI response:', data);
+      return c.json({ 
+        error: 'Empty response from OpenAI',
+        message: getFallbackResponse(message)
+      }, 500);
+    }
 
     // Generate smart suggestions based on question and response
     const suggestions = generateSuggestions(message, analyses);
@@ -112,9 +146,10 @@ If asked about specific insights not in the context, politely explain what data 
 
   } catch (error) {
     console.error('Chat error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return c.json({ 
-      error: 'Chat failed: ' + (error as Error).message,
-      message: 'I encountered an error. Please try asking your question differently.'
+      error: 'Chat failed: ' + errorMessage,
+      message: getFallbackResponse('error')
     }, 500);
   }
 });

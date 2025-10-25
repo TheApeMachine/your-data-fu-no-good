@@ -389,7 +389,8 @@ app.get('/', (c) => {
                         <i class="fas fa-brain text-sm"></i>
                     </div>
                     <div class="neu-card px-4 py-2 max-w-[80%]" style="color: var(--text-primary);">
-                        👋 Hi! I'm your data analysis assistant. I can help you understand patterns, correlations, and insights in your data. What would you like to know?
+                        <p class="mb-3">👋 Hi! I'm your data analysis assistant. I can help you understand patterns, correlations, and insights in your data.</p>
+                        <p class="text-sm" style="color: var(--text-secondary);">💡 <strong>Tip:</strong> To enable AI-powered responses, add your OpenAI API key to <code>.dev.vars</code> file. See <a href="https://github.com/yourusername/webapp/blob/main/OPENAI_SETUP.md" target="_blank" class="underline" style="color: var(--accent);">OPENAI_SETUP.md</a> for instructions.</p>
                     </div>
                 </div>
             </div>

@@ -53,7 +53,14 @@ async function sendChatMessage() {
         
     } catch (error) {
         removeTypingIndicator();
-        addMessageToChat('assistant', 'Sorry, I encountered an error. Please try again.');
+        
+        // Check if it's an API key configuration error
+        if (error.response && error.response.data && error.response.data.message) {
+            addMessageToChat('assistant', error.response.data.message);
+        } else {
+            addMessageToChat('assistant', 'Sorry, I encountered an error. Please try again.');
+        }
+        
         console.error('Chat error:', error);
     }
 }
