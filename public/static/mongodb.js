@@ -111,13 +111,9 @@ async function importFromMongoDB() {
             // Start analysis
             const datasetId = response.data.dataset_id;
             
-            // Hide upload section, show results
+            // Trigger analysis (same as file upload flow)
             setTimeout(async () => {
-                document.getElementById('upload-section').classList.add('hidden');
-                document.getElementById('results-section').classList.remove('hidden');
-                
-                // Trigger analysis
-                await analyzeDataset(datasetId);
+                await triggerAnalysis(datasetId);
             }, 1500);
         } else {
             showMongoDBStatus('error', `✗ Import failed: ${response.data.error}`);
