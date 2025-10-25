@@ -118,6 +118,37 @@ export function scoreInsightQuality(
         reasons.push('Moderate trend');
       }
       break;
+
+    case 'timeseries':
+      // Time-series are high-value insights
+      score += 20;
+      reasons.push('Time-series analysis');
+      
+      const tsStrength = result.trend?.strength || 0;
+      if (tsStrength > 0.6) {
+        score += 25;
+        reasons.push('Strong temporal trend');
+      } else if (tsStrength > 0.3) {
+        score += 15;
+        reasons.push('Moderate temporal trend');
+      }
+      
+      if (result.seasonality && result.seasonality !== 'none') {
+        score += 25;
+        reasons.push(`${result.seasonality} seasonality detected`);
+      }
+      
+      if (result.growthRate && Math.abs(result.growthRate) > 20) {
+        score += 15;
+        reasons.push('Significant growth/decline');
+      }
+      
+      // Long time-series are more valuable
+      if (result.points > 50) {
+        score += 10;
+        reasons.push('Sufficient data points for analysis');
+      }
+      break;
   }
 
   // Null handling

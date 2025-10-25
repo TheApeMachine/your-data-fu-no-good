@@ -89,6 +89,9 @@ function createVisualizationForAnalysis(
     case 'trend':
       return createTrendChart(analysis, rows, mappingsMap);
     
+    case 'timeseries':
+      return createTimeSeriesChart(analysis, rows, mappingsMap);
+    
     default:
       return null;
   }
@@ -455,4 +458,208 @@ function createHistogramData(values: number[], bins: number = 10): { labels: str
   });
 
   return { labels, data: histogram };
+}
+
+function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
+  const result = analysis.result;
+  const dateCol = result.dateColumn;
+  const valueCol = result.valueColumn;
+  
+  if (!dateCol || !valueCol) return null;
+
+  const dateColSuffix = mappingsMap.has(dateCol) ? ` (via ${mappingsMap.get(dateCol)})` : '';
+  const valueColSuffix = mappingsMap.has(valueCol) ? ` (via ${mappingsMap.get(valueCol)})` : '';
+
+  // Parse and sort data by date
+  interface TimePoint {
+    date: Date;
+    value: number;
+  }
+  
+  const points: TimePoint[] = [];
+  
+  for (const row of rows) {
+    const dateValue = row[dateCol];
+    const numValue = row[valueCol];
+    
+    if (!dateValue || numValue === null || numValue === undefined) continue;
+    
+    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+    const value = Number(numValue);
+    
+    if (!isNaN(date.getTime()) && !isNaN(value)) {
+      points.push({ date, value });
+    }
+  }
+  
+  // Sort by date
+  points.sort((a, b) => a.date.getTime() - b.date.getTime());
+  
+  if (points.length === 0) return null;
+  
+  // Format dates based on granularity
+  const formatDate = (date: Date, granularity: string): string => {
+    const options: Intl.DateTimeFormatOptions = {};
+    
+    switch (granularity) {
+      case 'hourly':
+        return date.toLocaleString('en-US', { 
+          month: 'short', 
+          day: 'numeric', 
+          hour: 'numeric',
+          hour12: true 
+        });
+      case 'daily':
+        return date.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric',
+          year: points.length > 365 ? 'numeric' : undefined
+        });
+      case 'weekly':
+        return date.toLocaleDateString('en-US', { 
+          month: 'short', 
+          day: 'numeric',
+          year: 'numeric'
+        });
+      case 'monthly':
+        return date.toLocaleDateString('en-US', { 
+          month: 'short', 
+          year: 'numeric' 
+        });
+      case 'yearly':
+        return date.getFullYear().toString();
+      default:
+        return date.toLocaleDateString();
+    }
+  };
+  
+  const labels = points.map(p => formatDate(p.date, result.granularity));
+  const data = points.map(p => p.value);
+  
+  // Determine color based on trend
+  let color: string;
+  let backgroundColor: string;
+  
+  if (result.trend && result.trend.direction === 'up') {
+    color = 'rgba(16, 185, 129, 1)';        // green
+    backgroundColor = 'rgba(16, 185, 129, 0.1)';
+  } else if (result.trend && result.trend.direction === 'down') {
+    color = 'rgba(239, 68, 68, 1)';         // red
+    backgroundColor = 'rgba(239, 68, 68, 0.1)';
+  } else {
+    color = 'rgba(59, 130, 246, 1)';        // blue
+    backgroundColor = 'rgba(59, 130, 246, 0.1)';
+  }
+  
+  // Build title with key metrics
+  const titleParts = [`${valueCol} over Time`];
+  if (result.trend && result.trend.strength > 0.3) {
+    const arrow = result.trend.direction === 'up' ? '↗' : '↘';
+    titleParts.push(`${arrow} ${(result.trend.strength * 100).toFixed(0)}%`);
+  }
+  if (result.seasonality && result.seasonality !== 'none') {
+    titleParts.push(`📅 ${result.seasonality}`);
+  }
+  
+  const title = titleParts.join(' | ');
+  
+  // Build detailed explanation
+  const explanationParts: string[] = [];
+  
+  const firstDate = points[0].date.toLocaleDateString();
+  const lastDate = points[points.length - 1].date.toLocaleDateString();
+  explanationParts.push(`Time series from ${firstDate} to ${lastDate}${valueColSuffix || dateColSuffix ? ' using human-readable names' : ''}`);
+  
+  if (result.growthRate !== undefined && Math.abs(result.growthRate) > 5) {
+    const change = result.growthRate > 0 ? 'increased' : 'decreased';
+    explanationParts.push(`${change} by ${Math.abs(result.growthRate).toFixed(1)}%`);
+  }
+  
+  if (result.seasonality && result.seasonality !== 'none') {
+    explanationParts.push(`shows ${result.seasonality} patterns`);
+  }
+  
+  return {
+    chartType: 'line',
+    title: `${title}${valueColSuffix}`,
+    explanation: explanationParts.join(', ') + '.',
+    config: {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: valueCol,
+          data,
+          borderColor: color,
+          backgroundColor: backgroundColor,
+          borderWidth: 2,
+          fill: true,
+          tension: 0.4,
+          pointRadius: points.length > 100 ? 0 : 3,
+          pointHoverRadius: 5,
+          pointBackgroundColor: color,
+          pointBorderColor: '#fff',
+          pointBorderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: { 
+            display: false 
+          },
+          title: {
+            display: true,
+            text: title,
+            font: {
+              size: 14,
+              weight: 'bold'
+            }
+          },
+          tooltip: {
+            callbacks: {
+              title: (context: any) => {
+                return context[0].label;
+              },
+              label: (context: any) => {
+                const value = context.parsed.y;
+                return `${valueCol}: ${value.toFixed(2)}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: { 
+              display: true, 
+              text: dateCol 
+            },
+            ticks: {
+              maxRotation: 45,
+              minRotation: 45,
+              autoSkip: true,
+              maxTicksLimit: 15
+            }
+          },
+          y: {
+            title: { 
+              display: true, 
+              text: valueCol 
+            },
+            beginAtZero: false,
+            ticks: {
+              callback: (value: any) => {
+                return typeof value === 'number' ? value.toFixed(2) : value;
+              }
+            }
+          }
+        }
+      }
+    }
+  };
 }

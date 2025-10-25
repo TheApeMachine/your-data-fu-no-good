@@ -1,6 +1,6 @@
 // Automated data analysis engine
 
-import { calculateStats, detectOutliers, calculateCorrelation, detectTrend } from './statistics';
+import { calculateStats, detectOutliers, calculateCorrelation, detectTrend, analyzeTimeSeries } from './statistics';
 import { scoreInsightQuality } from './quality-scorer';
 import type { Analysis } from '../types';
 
@@ -133,7 +133,50 @@ export async function analyzeDataset(
     }
   }
 
-  // 5. Pattern detection - find most common patterns
+  // 5. Time-series analysis for date/datetime columns
+  const dateColumns = columns.filter(c => c.type === 'date' || c.type === 'datetime');
+  
+  // For each date column, analyze with each numeric column
+  for (const dateCol of dateColumns) {
+    for (const numCol of numericColumns) {
+      const dates = rows.map(r => r[dateCol.name]).filter(v => v);
+      const values = rows.map(r => r[numCol.name]).filter(v => v !== null && v !== undefined);
+      
+      if (dates.length !== values.length || dates.length < 5) continue;
+      
+      const tsStats = analyzeTimeSeries(dates, values.map(v => Number(v)));
+      
+      if (tsStats && (tsStats.trend.strength > 0.3 || tsStats.seasonality !== 'none')) {
+        const timeseriesExplanation = generateTimeSeriesExplanation(dateCol.name, numCol.name, tsStats);
+        const timeseriesResult = {
+          dateColumn: dateCol.name,
+          valueColumn: numCol.name,
+          ...tsStats,
+          // Don't serialize the full points array in result (too large)
+          points: tsStats.points.length
+        };
+        
+        const importance = tsStats.trend.strength > 0.6 || tsStats.seasonality !== 'none' ? 'high' : 'medium';
+        const tsQuality = scoreInsightQuality('timeseries', numCol.name, timeseriesResult, { count: dates.length });
+        
+        await db.prepare(`
+          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          datasetId,
+          'timeseries',
+          `${dateCol.name}_${numCol.name}`,
+          JSON.stringify(timeseriesResult),
+          tsStats.trend.strength,
+          timeseriesExplanation,
+          importance,
+          tsQuality.score
+        ).run();
+      }
+    }
+  }
+
+  // 6. Pattern detection - find most common patterns
   for (const col of columns) {
     if (col.type === 'string') {
       // Clean values: filter out null, undefined, empty strings, and common null representations
@@ -206,4 +249,39 @@ function determineImportance(stats: any, colType: string): 'low' | 'medium' | 'h
   if (stats.uniqueCount === 1) return 'low'; // All same value
   if (colType === 'number' && stats.stdDev > stats.mean) return 'high'; // High variance
   return 'medium';
+}
+
+function generateTimeSeriesExplanation(dateCol: string, valueCol: string, stats: any): string {
+  const parts: string[] = [];
+  
+  // Date range
+  const firstDate = new Date(stats.firstDate).toLocaleDateString();
+  const lastDate = new Date(stats.lastDate).toLocaleDateString();
+  parts.push(`Time series analysis of "${valueCol}" from ${firstDate} to ${lastDate}`);
+  
+  // Trend
+  if (stats.trend.strength > 0.3) {
+    const direction = stats.trend.direction === 'up' ? 'upward' : 'downward';
+    const strength = stats.trend.strength > 0.7 ? 'strong' : 'moderate';
+    parts.push(`Shows a ${strength} ${direction} trend (${(stats.trend.strength * 100).toFixed(0)}% strength)`);
+  }
+  
+  // Growth rate
+  if (stats.growthRate !== undefined && Math.abs(stats.growthRate) > 5) {
+    const change = stats.growthRate > 0 ? 'increase' : 'decrease';
+    parts.push(`Overall ${change} of ${Math.abs(stats.growthRate).toFixed(1)}% over the period`);
+  }
+  
+  // Seasonality
+  if (stats.seasonality && stats.seasonality !== 'none') {
+    parts.push(`Exhibits ${stats.seasonality} seasonal patterns`);
+  }
+  
+  // Volatility
+  if (stats.volatility > 0.3) {
+    const level = stats.volatility > 0.5 ? 'high' : 'moderate';
+    parts.push(`${level} volatility (${(stats.volatility * 100).toFixed(0)}% variation)`);
+  }
+  
+  return parts.join('. ') + '.';
 }
