@@ -94,7 +94,13 @@ export function inferColumnTypes(rows: Record<string, any>[]): Record<string, st
   for (const col of columns) {
     // Sample up to 100 rows for type inference
     const samples = rows.slice(0, Math.min(100, rows.length)).map(r => r[col]);
-    types[col] = inferType(samples);
+    const inferredType = inferType(samples);
+    types[col] = inferredType;
+    
+    // Log date/datetime detection for debugging
+    if (inferredType === 'date' || inferredType === 'datetime') {
+      console.log(`Detected ${inferredType} column: "${col}" (sample: "${samples[0]}")`);
+    }
   }
 
   return types;
@@ -129,9 +135,20 @@ function detectDateType(values: any[]): { isDate: boolean; hasTime: boolean; con
   
   let validDateCount = 0;
   let hasTimeCount = 0;
+  
+  // Check for Date objects first (PapaParse might have already converted them)
+  const dateObjectCount = values.filter(v => v instanceof Date && !isNaN(v.getTime())).length;
+  if (dateObjectCount / values.length > 0.8) {
+    console.log(`Found ${dateObjectCount}/${values.length} Date objects`);
+    return { isDate: true, hasTime: false, confidence: dateObjectCount / values.length };
+  }
+  
   const stringValues = values.filter(v => typeof v === 'string');
   
-  if (stringValues.length === 0) return { isDate: false, hasTime: false, confidence: 0 };
+  if (stringValues.length === 0) {
+    // No strings and no Date objects means not a date column
+    return { isDate: false, hasTime: false, confidence: 0 };
+  }
   
   // Common date patterns
   const datePatterns = [
