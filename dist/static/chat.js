@@ -39,6 +39,11 @@ async function sendChatMessage() {
         // Remove typing indicator
         removeTypingIndicator();
         
+        // Show tool call badges if any tools were used
+        if (response.data.tool_calls && response.data.tool_calls.length > 0) {
+            addToolCallBadges(response.data.tool_calls);
+        }
+        
         // Add assistant response
         addMessageToChat('assistant', response.data.message);
         
@@ -100,6 +105,66 @@ function removeTypingIndicator() {
     if (typingIndicator) {
         typingIndicator.remove();
     }
+}
+
+function addToolCallBadges(toolCalls) {
+    const messagesContainer = document.getElementById('chat-messages');
+    const badgesDiv = document.createElement('div');
+    badgesDiv.className = 'tool-call-badges mb-2';
+    
+    // Icon mapping for different tools
+    const toolIcons = {
+        'get_outlier_columns': 'fa-exclamation-triangle',
+        'get_correlation_analysis': 'fa-project-diagram',
+        'get_column_statistics': 'fa-chart-bar',
+        'search_analyses': 'fa-search',
+        'get_data_sample': 'fa-table',
+        'get_missing_values': 'fa-question-circle',
+        'suggest_data_cleaning': 'fa-broom'
+    };
+    
+    // Human-readable tool names
+    const toolNames = {
+        'get_outlier_columns': 'Outliers',
+        'get_correlation_analysis': 'Correlations',
+        'get_column_statistics': 'Statistics',
+        'search_analyses': 'Search',
+        'get_data_sample': 'Data Sample',
+        'get_missing_values': 'Missing Values',
+        'suggest_data_cleaning': 'Cleaning'
+    };
+    
+    badgesDiv.innerHTML = `
+        <div class="flex flex-wrap gap-2 pl-11">
+            <span class="text-xs" style="color: var(--text-secondary); line-height: 2;">
+                <i class="fas fa-tools"></i> Tools used:
+            </span>
+            ${toolCalls.map(tc => {
+                const icon = toolIcons[tc.name] || 'fa-cog';
+                const name = toolNames[tc.name] || tc.name;
+                return `
+                    <span class="neu-badge" style="
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                        border-radius: 12px;
+                        background: var(--bg-secondary);
+                        box-shadow: inset 2px 2px 4px var(--shadow-dark), 
+                                    inset -2px -2px 4px var(--shadow-light);
+                        color: var(--accent);
+                        font-weight: 500;
+                    ">
+                        <i class="fas ${icon}"></i>
+                        ${name}
+                    </span>
+                `;
+            }).join('')}
+        </div>
+    `;
+    messagesContainer.appendChild(badgesDiv);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
 function addSuggestionsToChat(suggestions) {

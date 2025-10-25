@@ -468,6 +468,7 @@ When users ask questions, use the appropriate tools to get actual data.`;
     
     let assistantMessage = '';
     let currentMessages = [...messages];
+    const toolCallsUsed: Array<{name: string, args: any}> = [];
     
     // Tool calling loop (max 5 iterations to prevent infinite loops)
     for (let iteration = 0; iteration < 5; iteration++) {
@@ -522,6 +523,9 @@ When users ask questions, use the appropriate tools to get actual data.`;
         for (const toolCall of responseMessage.tool_calls) {
           const functionName = toolCall.function.name;
           const functionArgs = JSON.parse(toolCall.function.arguments);
+          
+          // Track tool calls for frontend display
+          toolCallsUsed.push({ name: functionName, args: functionArgs });
           
           console.log(`Executing tool: ${functionName}`, functionArgs);
           
@@ -586,7 +590,8 @@ When users ask questions, use the appropriate tools to get actual data.`;
 
     return c.json({
       message: assistantMessage,
-      suggestions
+      suggestions,
+      tool_calls: toolCallsUsed
     });
 
   } catch (error) {
