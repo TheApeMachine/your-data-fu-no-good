@@ -413,11 +413,11 @@ app.get('/', (c) => {
                                         <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
                                             <i class="fas fa-list-ol mr-1"></i>Limit
                                         </label>
-                                        <input type="number" id="mongodb-limit" value="10000" min="1" max="10000"
+                                        <input type="number" id="mongodb-limit" value="10000" min="1"
                                                class="w-full p-3 rounded-lg neu-card-inset" 
                                                style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                         <p class="text-xs mt-1" style="color: var(--text-secondary);">
-                                            Maximum number of documents to import (max: 10,000)
+                                            Maximum number of documents to import (default: 10,000, max: 1,000,000)
                                         </p>
                                     </div>
 

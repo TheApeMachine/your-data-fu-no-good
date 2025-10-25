@@ -115,7 +115,7 @@ mongodbUpload.post('/', async (c) => {
     const col = db.collection(collection);
 
     // Execute query or aggregation pipeline with cursor streaming
-    const maxRows = Math.min(limit || 10000, 10000); // Cap at 10K rows
+    const maxRows = limit || 1000000; // Default 1M rows, user can override
     let cursor;
 
     if (pipeline && pipeline.length > 0) {
