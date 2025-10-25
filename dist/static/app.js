@@ -246,10 +246,16 @@ function displayVisualizations(visualizations) {
                     <h3 class="font-semibold" style="color: var(--text-primary);">${viz.title}</h3>
                     <p class="text-sm mt-1" style="color: var(--text-secondary);">${viz.explanation}</p>
                 </div>
-                <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')" 
-                        class="ml-3 neu-button p-2" title="Download as PNG">
-                    <i class="fas fa-download"></i>
-                </button>
+                <div class="flex gap-2">
+                    <button onclick="drillDownChart('${viz.title.replace(/'/g, "\\'").replace(/"/g, "&quot;")}', '${viz.explanation.replace(/'/g, "\\'").replace(/"/g, "&quot;")}', '${viz.column_name || ""}', '${viz.type || ""}')" 
+                            class="neu-button p-2" title="Drill down for deeper analysis" style="color: var(--accent);">
+                        <i class="fas fa-search-plus"></i>
+                    </button>
+                    <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')" 
+                            class="neu-button p-2" title="Download as PNG">
+                        <i class="fas fa-download"></i>
+                    </button>
+                </div>
             </div>
             <div style="position: relative; height: 300px;">
                 <canvas id="${canvasId}"></canvas>
@@ -276,6 +282,63 @@ function downloadChart(canvasId, title) {
     link.download = `${title.replace(/[^a-z0-9]/gi, '_')}.png`;
     link.href = canvas.toDataURL('image/png');
     link.click();
+}
+
+// Drill down into chart for deeper analysis
+function drillDownChart(title, explanation, columnName, chartType) {
+    // Open chat widget if closed
+    if (!chatOpen) {
+        toggleChat();
+    }
+    
+    // Generate context-aware query based on chart type and content
+    let query = '';
+    
+    // Parse chart type from title or explanation
+    const titleLower = title.toLowerCase();
+    const explanationLower = explanation.toLowerCase();
+    
+    if (titleLower.includes('outlier') || explanationLower.includes('outlier')) {
+        query = columnName 
+            ? `Tell me more about the outliers in ${columnName}. What are the specific values and why are they considered outliers?`
+            : `Analyze the outliers shown in this chart: "${title}". What patterns do you see?`;
+            
+    } else if (titleLower.includes('correlation') || explanationLower.includes('correlation')) {
+        query = columnName 
+            ? `Explain the correlation involving ${columnName}. What does this relationship mean for the data?`
+            : `Analyze this correlation: "${title}". What insights can we derive from this relationship?`;
+            
+    } else if (titleLower.includes('distribution') || explanationLower.includes('distribution')) {
+        query = columnName 
+            ? `Analyze the distribution pattern of ${columnName}. What does this tell us about the data?`
+            : `What can you tell me about this distribution: "${title}"?`;
+            
+    } else if (titleLower.includes('trend') || explanationLower.includes('trend')) {
+        query = columnName 
+            ? `Explain the trend in ${columnName}. Is this trend significant? What might be causing it?`
+            : `Analyze this trend: "${title}". What predictions or insights can we make?`;
+            
+    } else if (titleLower.includes('pattern') || titleLower.includes('frequency')) {
+        query = columnName 
+            ? `What patterns do you see in ${columnName}? Are there any notable observations?`
+            : `Analyze the patterns shown in: "${title}". What do they reveal?`;
+            
+    } else {
+        // Generic drill-down query
+        query = columnName 
+            ? `Provide a detailed analysis of ${columnName} based on this chart: "${title}"`
+            : `Give me deeper insights about: "${title}"`;
+    }
+    
+    // Set the query in the chat input and focus
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+        chatInput.value = query;
+        chatInput.focus();
+        
+        // Optionally auto-send (uncomment if desired)
+        // sendChatMessage();
+    }
 }
 
 // Display dataset information
