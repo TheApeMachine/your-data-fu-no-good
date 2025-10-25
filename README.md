@@ -66,6 +66,8 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 
 #### 6. **AI Chat Assistant** (NEW! 🎉)
 - **OpenAI GPT-4o-mini** - Conversational data analysis
+- **Streaming Responses** - Token-by-token display with real-time feedback
+- **Tool Call Badges** - Visual transparency showing which database tools AI queries
 - **Function Calling** - 7 tools for database queries:
   1. `get_outlier_columns` - Find outliers with counts/percentages
   2. `get_correlation_analysis` - Query correlations with filtering
@@ -78,6 +80,7 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 - **Smart Suggestions** - Follow-up questions after each response
 - **Conversation History** - Maintains context across messages
 - **50% Token Savings** - Tools query on-demand vs large context
+- **Automatic Fallback** - Seamlessly switches to non-streaming if SSE fails
 
 **Example Queries:**
 ```
@@ -386,11 +389,16 @@ box-shadow:
 - `DELETE /api/mappings/:id` - Delete mapping
 
 ### AI Chat (NEW! 🎉)
-- `POST /api/chat/:datasetId` - Chat with AI assistant
+- `POST /api/chat/:datasetId` - Chat with AI assistant (non-streaming)
   - Body: `{ message: string, conversationHistory: array }`
-  - Returns: `{ message: string, suggestions: string[] }`
+  - Returns: `{ message: string, suggestions: string[], tool_calls: array }`
   - Uses OpenAI function calling with 7 database query tools
   - Response time: 2-7 seconds (depending on tool complexity)
+- `POST /api/chat/:datasetId/stream` - Chat with streaming responses (recommended)
+  - Body: `{ message: string, conversationHistory: array }`
+  - Returns: Server-Sent Events (SSE) stream
+  - Events: `content`, `tool_calls_start`, `tool_call`, `tool_calls_complete`, `suggestions`, `done`
+  - Real-time token-by-token display with tool execution feedback
 
 ---
 
@@ -401,15 +409,18 @@ box-shadow:
 2. ~~**Function Calling**~~ - 7 tools for database queries (DONE!)
 3. ~~**Data Cleaning Suggestions**~~ - AI-powered recommendations (DONE!)
 4. ~~**Data Sample Viewing**~~ - See actual rows via chat (DONE!)
+5. ~~**Tool Call Badges**~~ - Visual transparency showing AI database queries (DONE!)
+6. ~~**Streaming Responses**~~ - Real-time token-by-token chat display (DONE!)
 
 ### In Progress ⏳
-1. **Streaming Responses** - Real-time token-by-token chat
-2. **Data Cleaning Execution** - Apply suggested cleaning operations
-3. **Tool Result Caching** - Cache frequent queries for speed
+1. **Drill-Down Analysis** - Interactive chart buttons for deeper data exploration
+2. **MongoDB Connector** - Create datasets from Atlas Data API queries
+3. **MongoDB AI Integration** - AI generates MongoDB pipelines via chat
 
 ### Planned Features 📋
-4. **Natural Language → Visualization** - "Show me sales by region" generates chart
-5. **Data Cleaning Toggle** - Preview + apply/revert functionality
+4. **Data Cleaning Execution** - Apply suggested cleaning operations
+5. **Natural Language → Visualization** - "Show me sales by region" generates chart
+6. **Data Cleaning Toggle** - Preview + apply/revert functionality
 6. **Custom Calculated Columns** - Config interface with suggestions
 7. **Multi-file Merging** - Auto-detect join relationships
 8. **Time Series Analysis** - Seasonality, forecasting, trends
