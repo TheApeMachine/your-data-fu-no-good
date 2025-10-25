@@ -114,50 +114,40 @@ mongodbUpload.post('/', async (c) => {
     const db = client.db(database);
     const col = db.collection(collection);
 
-    // Execute query or aggregation pipeline
-    let rows: Record<string, any>[];
+    // Execute query or aggregation pipeline with cursor streaming
     const maxRows = Math.min(limit || 10000, 10000); // Cap at 10K rows
+    let cursor;
 
     if (pipeline && pipeline.length > 0) {
-      // Aggregation pipeline
+      // Aggregation pipeline with cursor
       const parsedPipeline = typeof pipeline === 'string' 
         ? JSON.parse(pipeline) 
         : pipeline;
       
-      rows = await col
-        .aggregate([...parsedPipeline, { $limit: maxRows }])
-        .toArray();
+      cursor = col.aggregate([...parsedPipeline, { $limit: maxRows }]);
         
     } else if (query) {
-      // Simple query
+      // Simple query with cursor
       const parsedQuery = typeof query === 'string' 
         ? JSON.parse(query) 
         : query;
       
-      rows = await col
-        .find(parsedQuery)
-        .limit(maxRows)
-        .toArray();
+      cursor = col.find(parsedQuery).limit(maxRows);
         
     } else {
-      // No filter - get all documents
-      rows = await col
-        .find({})
-        .limit(maxRows)
-        .toArray();
+      // No filter - get all documents with cursor
+      cursor = col.find({}).limit(maxRows);
     }
 
-    await client.close();
+    // Stream documents using cursor with inline flattening (memory efficient)
+    const rows: Record<string, any>[] = [];
+    let processedCount = 0;
 
-    if (rows.length === 0) {
-      return c.json({ error: 'No documents found matching the query' }, 400);
-    }
-
-    // Convert MongoDB _id to string and flatten nested objects
-    rows = rows.map(row => {
+    // Helper function to flatten and convert document
+    const flattenDocument = (doc: any): Record<string, any> => {
       const flattened: Record<string, any> = {};
       
-      for (const [key, value] of Object.entries(row)) {
+      for (const [key, value] of Object.entries(doc)) {
         if (key === '_id') {
           // Convert ObjectId to string
           flattened[key] = value.toString();
@@ -172,7 +162,32 @@ mongodbUpload.post('/', async (c) => {
       }
       
       return flattened;
-    });
+    };
+
+    try {
+      while (await cursor.hasNext() && processedCount < maxRows) {
+        const doc = await cursor.next();
+        if (doc) {
+          // Flatten immediately to reduce memory footprint
+          rows.push(flattenDocument(doc));
+          processedCount++;
+          
+          // Log progress for large imports
+          if (processedCount % 1000 === 0) {
+            console.log(`Processed ${processedCount} documents from ${database}.${collection}`);
+          }
+        }
+      }
+    } finally {
+      await cursor.close();
+      await client.close();
+    }
+
+    console.log(`MongoDB import completed: ${processedCount} documents from ${database}.${collection}`);
+
+    if (rows.length === 0) {
+      return c.json({ error: 'No documents found matching the query' }, 400);
+    }
 
     // Infer column types
     const columnTypes = inferColumnTypes(rows);
@@ -212,20 +227,28 @@ mongodbUpload.post('/', async (c) => {
     // For now, we'll store it in a JSON column in the dataset metadata
     // TODO: Add mongodb_config column to datasets table in migration
 
-    // Insert data rows in batches
-    const statements = rows.map((row, i) => 
-      c.env.DB.prepare(`
-        INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
-        VALUES (?, ?, ?, ?)
-      `).bind(datasetId, i, JSON.stringify(row), 0)
-    );
+    // Insert data rows in batches (memory efficient)
+    console.log(`Inserting ${rows.length} rows into D1 database...`);
+    const d1BatchSize = 100;
     
-    // Execute in batches of 100
-    const batchSize = 100;
-    for (let i = 0; i < statements.length; i += batchSize) {
-      const batch = statements.slice(i, i + batchSize);
-      await c.env.DB.batch(batch);
+    for (let i = 0; i < rows.length; i += d1BatchSize) {
+      const batch = rows.slice(i, i + d1BatchSize);
+      const statements = batch.map((row, idx) => 
+        c.env.DB.prepare(`
+          INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
+          VALUES (?, ?, ?, ?)
+        `).bind(datasetId, i + idx, JSON.stringify(row), 0)
+      );
+      
+      await c.env.DB.batch(statements);
+      
+      // Log progress for large imports
+      if ((i + d1BatchSize) % 1000 === 0 || (i + d1BatchSize) >= rows.length) {
+        console.log(`Inserted ${Math.min(i + d1BatchSize, rows.length)}/${rows.length} rows into D1`);
+      }
     }
+    
+    console.log(`D1 insert completed: ${rows.length} rows`);
 
     return c.json({
       success: true,
