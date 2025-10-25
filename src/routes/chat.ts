@@ -1,6 +1,7 @@
 // LLM Chat Interface with OpenAI API and Function Calling
 
 import { Hono } from 'hono';
+import { stream } from 'hono/streaming';
 import type { Bindings } from '../types';
 
 const chat = new Hono<{ Bindings: Bindings }>();
@@ -76,6 +77,59 @@ const tools = [
           keyword: {
             type: 'string',
             description: 'Keyword to search in explanations (optional)'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_data_sample',
+      description: 'Get a sample of actual data rows from the dataset',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: {
+            type: 'number',
+            description: 'Number of rows to return (default: 5, max: 20)'
+          },
+          columns: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Specific columns to include (optional)'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_missing_values',
+      description: 'Get information about missing values in the dataset',
+      parameters: {
+        type: 'object',
+        properties: {
+          min_missing_percentage: {
+            type: 'number',
+            description: 'Minimum percentage of missing values to include (optional, default: 0)'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'suggest_data_cleaning',
+      description: 'Get data cleaning suggestions for a specific column or the entire dataset',
+      parameters: {
+        type: 'object',
+        properties: {
+          column_name: {
+            type: 'string',
+            description: 'Specific column to analyze (optional, analyzes entire dataset if not provided)'
           }
         }
       }
@@ -221,6 +275,134 @@ async function executeSearchAnalyses(db: any, datasetId: string, args: any) {
   };
 }
 
+async function executeGetDataSample(db: any, datasetId: string, args: any) {
+  const limit = Math.min(args.limit || 5, 20);
+  const columns = args.columns;
+  
+  const result = await db.prepare(`
+    SELECT data FROM data_rows 
+    WHERE dataset_id = ? 
+    ORDER BY row_number 
+    LIMIT ?
+  `).bind(datasetId, limit).all();
+  
+  const rows = result.results.map((r: any) => JSON.parse(r.data));
+  
+  // Filter columns if specified
+  if (columns && columns.length > 0) {
+    return {
+      rows: rows.map((row: any) => {
+        const filtered: any = {};
+        columns.forEach((col: string) => {
+          if (row.hasOwnProperty(col)) {
+            filtered[col] = row[col];
+          }
+        });
+        return filtered;
+      }),
+      row_count: rows.length
+    };
+  }
+  
+  return {
+    rows: rows,
+    row_count: rows.length
+  };
+}
+
+async function executeGetMissingValues(db: any, datasetId: string, args: any) {
+  const minPercentage = args.min_missing_percentage || 0;
+  
+  const result = await db.prepare(`
+    SELECT analysis_type, column_name, result, explanation
+    FROM analyses 
+    WHERE dataset_id = ? AND analysis_type = 'missing'
+  `).bind(datasetId).all();
+  
+  const missingData = result.results
+    .map((r: any) => {
+      const res = JSON.parse(r.result);
+      return {
+        column: r.column_name,
+        count: res.count || 0,
+        percentage: res.percentage || 0,
+        explanation: r.explanation
+      };
+    })
+    .filter((m: any) => m.percentage >= minPercentage);
+  
+  return {
+    total_columns_with_missing: missingData.length,
+    missing_values: missingData
+  };
+}
+
+async function executeSuggestDataCleaning(db: any, datasetId: string, args: any) {
+  const columnName = args.column_name;
+  
+  let query = `
+    SELECT analysis_type, column_name, result, explanation
+    FROM analyses 
+    WHERE dataset_id = ?
+  `;
+  
+  const params = [datasetId];
+  
+  if (columnName) {
+    query += ` AND column_name = ?`;
+    params.push(columnName);
+  }
+  
+  const result = await db.prepare(query).bind(...params).all();
+  
+  const suggestions: any[] = [];
+  
+  result.results.forEach((r: any) => {
+    const res = JSON.parse(r.result);
+    const type = r.analysis_type;
+    
+    if (type === 'outlier' && res.count > 0) {
+      suggestions.push({
+        column: r.column_name,
+        issue: 'outliers',
+        severity: res.percentage > 10 ? 'high' : 'medium',
+        suggestion: `Remove or cap ${res.count} outlier values (${res.percentage}% of data)`,
+        details: r.explanation
+      });
+    }
+    
+    if (type === 'missing' && res.count > 0) {
+      suggestions.push({
+        column: r.column_name,
+        issue: 'missing_values',
+        severity: res.percentage > 20 ? 'high' : res.percentage > 5 ? 'medium' : 'low',
+        suggestion: `Handle ${res.count} missing values (${res.percentage}%). Consider imputation or removal.`,
+        details: r.explanation
+      });
+    }
+    
+    if (type === 'pattern' && res.mode_frequency > 80) {
+      suggestions.push({
+        column: r.column_name,
+        issue: 'low_variance',
+        severity: 'low',
+        suggestion: `Column has very low variance (${res.mode_frequency}% same value). Consider removing if not meaningful.`,
+        details: r.explanation
+      });
+    }
+  });
+  
+  return {
+    total_suggestions: suggestions.length,
+    suggestions: suggestions.sort((a, b) => {
+      const severityOrder = { high: 3, medium: 2, low: 1 };
+      return (severityOrder[b.severity as keyof typeof severityOrder] || 0) - 
+             (severityOrder[a.severity as keyof typeof severityOrder] || 0);
+    })
+  };
+}
+
+// Main chat endpoint (non-streaming for compatibility)
 chat.post('/:datasetId', async (c) => {
   try {
     const datasetId = c.req.param('datasetId');
@@ -259,6 +441,9 @@ You have access to tools to query specific analyses:
 - get_correlation_analysis: Find correlations between columns
 - get_column_statistics: Get detailed stats for a specific column
 - search_analyses: Search all analyses by type or keyword
+- get_data_sample: Get sample rows from the dataset
+- get_missing_values: Find columns with missing data
+- suggest_data_cleaning: Get data cleaning suggestions
 
 Your role:
 - Use tools to get specific data when asked
@@ -267,7 +452,7 @@ Your role:
 - Use bullet points for lists
 - Always cite specific results from tool calls
 
-When users ask questions like "which columns have outliers?", use the get_outlier_columns tool to get the actual data.`;
+When users ask questions, use the appropriate tools to get actual data.`;
 
     // Build messages array
     const messages = [
@@ -279,10 +464,9 @@ When users ask questions like "which columns have outliers?", use the get_outlie
     // Call OpenAI API with tools
     const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
     
-    console.log(`Calling OpenAI API with model: ${model} and tools`);
+    console.log(`Calling OpenAI API with model: ${model} and ${tools.length} tools`);
     
     let assistantMessage = '';
-    let toolCalls: any[] = [];
     let currentMessages = [...messages];
     
     // Tool calling loop (max 5 iterations to prevent infinite loops)
@@ -298,7 +482,7 @@ When users ask questions like "which columns have outliers?", use the get_outlie
           messages: currentMessages,
           tools,
           tool_choice: 'auto',
-          max_tokens: 1000,
+          max_tokens: 1500,
           temperature: 0.7
         })
       });
@@ -356,6 +540,15 @@ When users ask questions like "which columns have outliers?", use the get_outlie
               case 'search_analyses':
                 toolResult = await executeSearchAnalyses(c.env.DB, datasetId, functionArgs);
                 break;
+              case 'get_data_sample':
+                toolResult = await executeGetDataSample(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'get_missing_values':
+                toolResult = await executeGetMissingValues(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'suggest_data_cleaning':
+                toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
+                break;
               default:
                 toolResult = { error: `Unknown function: ${functionName}` };
             }
@@ -411,15 +604,18 @@ function generateSuggestions(userMessage: string, analyses: any[]): string[] {
   const suggestions: string[] = [];
 
   if (messageLower.includes('outlier')) {
+    suggestions.push("How should I clean the outliers?");
     suggestions.push("Show me correlations between outlier columns");
-    suggestions.push("What patterns exist in the outliers?");
   } else if (messageLower.includes('correlat')) {
     suggestions.push("Which columns have the most outliers?");
-    suggestions.push("Are there patterns in categorical data?");
+    suggestions.push("Show me a data sample");
+  } else if (messageLower.includes('clean')) {
+    suggestions.push("Show me missing values");
+    suggestions.push("What are the biggest data quality issues?");
   } else {
     suggestions.push("Which columns have outliers?");
+    suggestions.push("Suggest data cleaning steps");
     suggestions.push("Show me the strongest correlations");
-    suggestions.push("What are the key patterns?");
   }
 
   return suggestions.slice(0, 3);
