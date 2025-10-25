@@ -14,7 +14,9 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 
 ### 🚀 Core Functionality
 
-- **One-Click Upload & Analysis** - Drop CSV/JSON files and get instant insights
+- **Multi-Source Upload** - CSV/JSON files + MongoDB Atlas direct import ✨ NEW
+- **One-Click Upload & Analysis** - Drop files and get instant insights
+- **MongoDB Integration** - Import directly from Atlas using official driver ✨ NEW
 - **Auto-Type Detection** - Smart column type inference (numeric, categorical, datetime)
 - **Statistical Analysis** - Mean, median, mode, std dev, quartiles, outliers (IQR method)
 - **Correlation Detection** - Pearson correlation coefficient for relationships
@@ -64,11 +66,12 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 - **Color-Coded** - Blue (columns), Green (values), Purple (correlations)
 - **Weighted Edges** - Thickness represents correlation strength
 
-#### 6. **AI Chat Assistant** (NEW! 🎉)
+#### 6. **AI Chat Assistant** (🔥 UPGRADED! 🎉)
 - **OpenAI GPT-4o-mini** - Conversational data analysis
 - **Streaming Responses** - Token-by-token display with real-time feedback
 - **Tool Call Badges** - Visual transparency showing which database tools AI queries
-- **Function Calling** - 7 tools for database queries:
+- **Drill-Down Analysis** - Interactive chart buttons for deeper exploration
+- **Function Calling** - 8 tools for database queries:
   1. `get_outlier_columns` - Find outliers with counts/percentages
   2. `get_correlation_analysis` - Query correlations with filtering
   3. `get_column_statistics` - Detailed column statistics
@@ -76,6 +79,7 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
   5. `get_data_sample` - View actual data rows (max 20)
   6. `get_missing_values` - Missing data detection
   7. `suggest_data_cleaning` - AI-powered cleaning suggestions
+  8. `generate_mongodb_query` - Generate MongoDB queries/pipelines from natural language ✨ NEW
 - **Specific Answers** - Returns actual database values, not generic advice
 - **Smart Suggestions** - Follow-up questions after each response
 - **Conversation History** - Maintains context across messages
@@ -95,6 +99,41 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 
 "Show me 5 rows"
 → [Displays actual data with all columns]
+
+"Generate a MongoDB query to find active users from last month"
+→ [Returns valid MongoDB query with explanation]
+```
+
+#### 7. **MongoDB Atlas Integration** (✨ NEW! 🎉)
+- **Direct MongoDB Import** - Connect to Atlas and import collections
+- **Official MongoDB Driver** - Uses native Node.js driver (not deprecated Data API)
+- **Connection Testing** - Verify credentials before import
+- **Query Support** - Filter documents with MongoDB query syntax
+- **Aggregation Pipelines** - Full support for complex $match, $group, $project operations
+- **AI Query Generation** - Ask AI to write queries/pipelines for you
+- **Automatic Conversion** - ObjectId → string, nested objects flattened
+- **10K Document Limit** - Performance-optimized with configurable limits
+
+**How to Use:**
+1. Click "MongoDB Import" tab in upload section
+2. Enter your Atlas connection string: `mongodb+srv://user:pass@cluster.mongodb.net/db`
+3. Select database and collection
+4. (Optional) Add query filter or aggregation pipeline
+5. Test connection, then import
+6. Or ask AI: "Generate a query to find sales over $1000 from Q1 2024"
+
+**Example AI-Generated Queries:**
+```javascript
+// Simple query
+{"status": "active", "createdAt": {"$gte": "2024-01-01"}}
+
+// Aggregation pipeline
+[
+  {"$match": {"status": "active"}},
+  {"$group": {"_id": "$category", "total": {"$sum": "$amount"}}},
+  {"$sort": {"total": -1}},
+  {"$limit": 10}
+]
 ```
 
 ---
@@ -406,16 +445,17 @@ box-shadow:
 
 ### Completed Recently ✅
 1. ~~**AI Chat Assistant**~~ - Conversational data analysis with OpenAI (DONE!)
-2. ~~**Function Calling**~~ - 7 tools for database queries (DONE!)
+2. ~~**Function Calling**~~ - 8 tools for database queries (DONE!)
 3. ~~**Data Cleaning Suggestions**~~ - AI-powered recommendations (DONE!)
 4. ~~**Data Sample Viewing**~~ - See actual rows via chat (DONE!)
 5. ~~**Tool Call Badges**~~ - Visual transparency showing AI database queries (DONE!)
 6. ~~**Streaming Responses**~~ - Real-time token-by-token chat display (DONE!)
+7. ~~**Drill-Down Analysis**~~ - Interactive chart buttons for deeper exploration (DONE!)
+8. ~~**MongoDB Connector**~~ - Import from Atlas using official driver (DONE!)
+9. ~~**MongoDB AI Integration**~~ - AI generates queries/pipelines via chat (DONE!)
 
 ### In Progress ⏳
-1. **Drill-Down Analysis** - Interactive chart buttons for deeper data exploration
-2. **MongoDB Connector** - Create datasets from Atlas Data API queries
-3. **MongoDB AI Integration** - AI generates MongoDB pipelines via chat
+1. **Data Cleaning Execution** - Apply suggested cleaning operations
 
 ### Planned Features 📋
 4. **Data Cleaning Execution** - Apply suggested cleaning operations
