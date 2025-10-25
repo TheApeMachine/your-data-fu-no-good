@@ -13,6 +13,8 @@
     "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
   },
   "dependencies": {
+    "@openai/agents": "^0.2.1",
+    "agents": "^0.2.16",
     "hono": "^4.10.2",
     "papaparse": "^5.5.3"
   },
