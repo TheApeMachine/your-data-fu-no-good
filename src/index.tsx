@@ -5,6 +5,7 @@ import type { Bindings } from './types';
 
 // Import routes
 import upload from './routes/upload';
+import mongodbUpload from './routes/mongodb-upload';
 import datasets from './routes/datasets';
 import analyze from './routes/analyze';
 import relationships from './routes/relationships';
@@ -21,6 +22,7 @@ app.use('/static/*', serveStatic({ root: './public' }));
 
 // API routes
 app.route('/api/upload', upload);
+app.route('/api/upload/mongodb', mongodbUpload);
 app.route('/api/datasets', datasets);
 app.route('/api/analyze', analyze);
 app.route('/api/relationships', relationships);
@@ -214,24 +216,124 @@ app.get('/', (c) => {
                             Upload Your Data
                         </h2>
                         <p class="mb-6" style="color: var(--text-secondary);">
-                            Drop a CSV or JSON file below and we'll automatically analyze it, find patterns, 
-                            and explain what matters in plain English.
+                            Choose your data source: upload a file or import from MongoDB Atlas.
                         </p>
 
-                        <div id="upload-area" class="upload-area neu-card-inset rounded-lg p-12 text-center cursor-pointer">
-                            <input type="file" id="file-input" accept=".csv,.json" class="hidden">
-                            <div id="upload-prompt">
-                                <i class="fas fa-cloud-upload-alt text-6xl mb-4" style="color: var(--text-secondary);"></i>
-                                <p class="text-xl mb-2">Drop your file here or click to browse</p>
-                                <p class="text-sm" style="color: var(--text-secondary);">Supports CSV and JSON files</p>
+                        <!-- Upload Method Tabs -->
+                        <div class="flex gap-3 mb-6">
+                            <button onclick="switchUploadMethod('file')" id="tab-upload-file" class="neu-button flex-1" style="background: var(--accent); color: white;">
+                                <i class="fas fa-file-upload mr-2"></i>File Upload
+                            </button>
+                            <button onclick="switchUploadMethod('mongodb')" id="tab-upload-mongodb" class="neu-button flex-1">
+                                <i class="fas fa-database mr-2"></i>MongoDB Import
+                            </button>
+                        </div>
+
+                        <!-- File Upload UI -->
+                        <div id="file-upload-area" class="upload-method-area">
+                            <div id="upload-area" class="upload-area neu-card-inset rounded-lg p-12 text-center cursor-pointer">
+                                <input type="file" id="file-input" accept=".csv,.json" class="hidden">
+                                <div id="upload-prompt">
+                                    <i class="fas fa-cloud-upload-alt text-6xl mb-4" style="color: var(--text-secondary);"></i>
+                                    <p class="text-xl mb-2">Drop your file here or click to browse</p>
+                                    <p class="text-sm" style="color: var(--text-secondary);">Supports CSV and JSON files</p>
+                                </div>
+                                <div id="upload-progress" class="hidden">
+                                    <i class="fas fa-spinner fa-spin text-4xl mb-4" style="color: var(--accent);"></i>
+                                    <p id="status-message" class="text-lg font-semibold">Uploading...</p>
+                                    <p id="status-detail" class="text-sm mt-2" style="color: var(--text-secondary);"></p>
+                                    <div class="mt-4 w-64 mx-auto neu-card-inset rounded-full h-3">
+                                        <div id="progress-bar" class="h-3 rounded-full transition-all duration-300" 
+                                             style="width: 0%; background: linear-gradient(90deg, var(--accent), #2563eb);"></div>
+                                    </div>
+                                </div>
                             </div>
-                            <div id="upload-progress" class="hidden">
-                                <i class="fas fa-spinner fa-spin text-4xl mb-4" style="color: var(--accent);"></i>
-                                <p id="status-message" class="text-lg font-semibold">Uploading...</p>
-                                <p id="status-detail" class="text-sm mt-2" style="color: var(--text-secondary);"></p>
-                                <div class="mt-4 w-64 mx-auto neu-card-inset rounded-full h-3">
-                                    <div id="progress-bar" class="h-3 rounded-full transition-all duration-300" 
-                                         style="width: 0%; background: linear-gradient(90deg, var(--accent), #2563eb);"></div>
+                        </div>
+
+                        <!-- MongoDB Import UI -->
+                        <div id="mongodb-import-area" class="upload-method-area hidden">
+                            <div class="neu-card-inset p-6 rounded-lg">
+                                <div class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                            <i class="fas fa-link mr-1"></i>Connection String
+                                        </label>
+                                        <input type="text" id="mongodb-connection-string" 
+                                               placeholder="mongodb+srv://username:password@cluster.mongodb.net/database"
+                                               class="w-full p-3 rounded-lg neu-card-inset" 
+                                               style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                        <p class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            Your MongoDB Atlas connection string (stored securely, not persisted)
+                                        </p>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                                <i class="fas fa-database mr-1"></i>Database
+                                            </label>
+                                            <input type="text" id="mongodb-database" placeholder="myDatabase"
+                                                   class="w-full p-3 rounded-lg neu-card-inset" 
+                                                   style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                                <i class="fas fa-table mr-1"></i>Collection
+                                            </label>
+                                            <input type="text" id="mongodb-collection" placeholder="myCollection"
+                                                   class="w-full p-3 rounded-lg neu-card-inset" 
+                                                   style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                            <i class="fas fa-filter mr-1"></i>Query (optional)
+                                        </label>
+                                        <textarea id="mongodb-query" rows="3" placeholder='{"status": "active"}'
+                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm" 
+                                                  style="background: var(--bg-primary); color: var(--text-primary); border: none;"></textarea>
+                                        <p class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            MongoDB query object (JSON format)
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                            <i class="fas fa-code-branch mr-1"></i>Aggregation Pipeline (optional)
+                                        </label>
+                                        <textarea id="mongodb-pipeline" rows="5" placeholder='[{"$match": {"status": "active"}}, {"$group": {"_id": "$category", "count": {"$sum": 1}}}]'
+                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm" 
+                                                  style="background: var(--bg-primary); color: var(--text-primary); border: none;"></textarea>
+                                        <p class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            MongoDB aggregation pipeline (JSON array format)
+                                        </p>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
+                                            <i class="fas fa-list-ol mr-1"></i>Limit
+                                        </label>
+                                        <input type="number" id="mongodb-limit" value="10000" min="1" max="10000"
+                                               class="w-full p-3 rounded-lg neu-card-inset" 
+                                               style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                        <p class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            Maximum number of documents to import (max: 10,000)
+                                        </p>
+                                    </div>
+
+                                    <div class="flex gap-3 pt-4">
+                                        <button onclick="testMongoDBConnection()" class="neu-button flex-1">
+                                            <i class="fas fa-plug mr-2"></i>Test Connection
+                                        </button>
+                                        <button onclick="importFromMongoDB()" class="neu-button-accent flex-1">
+                                            <i class="fas fa-download mr-2"></i>Import Data
+                                        </button>
+                                    </div>
+
+                                    <div id="mongodb-status" class="hidden mt-4 p-4 rounded-lg neu-card-inset">
+                                        <p id="mongodb-status-message" class="text-sm"></p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -437,6 +539,7 @@ app.get('/', (c) => {
         <script src="/static/app.js"></script>
         <script src="/static/graph.js"></script>
         <script src="/static/chat.js"></script>
+        <script src="/static/mongodb.js"></script>
     </body>
     </html>
   `);

@@ -4,13 +4,14 @@ export type Bindings = {
   DB: D1Database;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
+  MONGODB_CONNECTION_STRING?: string;
 };
 
 export interface Dataset {
   id: number;
   name: string;
   original_filename: string;
-  file_type: 'csv' | 'json';
+  file_type: 'csv' | 'json' | 'mongodb';
   row_count: number;
   column_count: number;
   columns: ColumnDefinition[];
@@ -18,6 +19,14 @@ export interface Dataset {
   analysis_status: 'pending' | 'analyzing' | 'complete' | 'error';
   cleaning_status: 'pending' | 'analyzing' | 'complete' | 'error';
   visualization_status: 'pending' | 'analyzing' | 'complete' | 'error';
+  mongodb_config?: MongoDBConfig; // Optional MongoDB metadata
+}
+
+export interface MongoDBConfig {
+  database: string;
+  collection: string;
+  query?: string; // JSON string of MongoDB query
+  pipeline?: string; // JSON string of aggregation pipeline
 }
 
 export interface ColumnDefinition {
