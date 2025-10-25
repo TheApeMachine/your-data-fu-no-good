@@ -14,7 +14,18 @@ export async function analyzeDataset(
 
   // 1. Statistical analysis for each column
   for (const col of columns) {
-    const values = rows.map(r => r[col.name]);
+    // Clean values: filter out null, undefined, empty strings, and whitespace-only strings
+    const values = rows
+      .map(r => r[col.name])
+      .filter(v => {
+        if (v === null || v === undefined) return false;
+        if (typeof v === 'string') {
+          const trimmed = v.trim();
+          return trimmed !== '' && trimmed !== 'null' && trimmed !== 'undefined' && trimmed !== 'N/A' && trimmed !== 'NA';
+        }
+        return true;
+      });
+    
     const stats = calculateStats(values, col.type);
 
     // Store statistics analysis
@@ -125,7 +136,18 @@ export async function analyzeDataset(
   // 5. Pattern detection - find most common patterns
   for (const col of columns) {
     if (col.type === 'string') {
-      const values = rows.map(r => r[col.name]).filter(v => v);
+      // Clean values: filter out null, undefined, empty strings, and common null representations
+      const values = rows
+        .map(r => r[col.name])
+        .filter(v => {
+          if (!v) return false;
+          if (typeof v === 'string') {
+            const trimmed = v.trim();
+            return trimmed !== '' && trimmed !== 'null' && trimmed !== 'undefined' && trimmed !== 'N/A' && trimmed !== 'NA';
+          }
+          return true;
+        });
+      
       const frequency: Record<string, number> = {};
       
       values.forEach(v => {
