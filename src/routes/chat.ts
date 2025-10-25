@@ -402,6 +402,195 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
   };
 }
 
+// Streaming chat endpoint
+chat.post('/:datasetId/stream', async (c) => {
+  const datasetId = c.req.param('datasetId');
+  const { message, conversationHistory = [] } = await c.req.json();
+
+  // Check if OpenAI API key is configured
+  const apiKey = c.env.OPENAI_API_KEY;
+  if (!apiKey || apiKey.includes('your-openai-api-key')) {
+    return c.json({ 
+      error: 'OpenAI API key not configured',
+      message: 'Please configure your OpenAI API key'
+    }, 500);
+  }
+
+  // Fetch dataset context
+  const dataset = await c.env.DB.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
+  if (!dataset) {
+    return c.json({ error: 'Dataset not found' }, 404);
+  }
+
+  const columns = JSON.parse(dataset.columns as string);
+  const systemPrompt = `You are a data analysis assistant helping users understand their dataset.
+
+Dataset: ${dataset.name}
+Rows: ${dataset.row_count}
+Columns: ${dataset.column_count}
+
+Available columns: ${columns.slice(0, 50).map((c: any) => c.name).join(', ')}${columns.length > 50 ? `, ... and ${columns.length - 50} more` : ''}
+
+You have access to tools to query specific analyses. Use tools to get specific data when asked.`;
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...conversationHistory,
+    { role: 'user', content: message }
+  ];
+
+  return stream(c, async (stream) => {
+    const toolCallsUsed: Array<{name: string, args: any}> = [];
+    let currentMessages = [...messages];
+    const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+    // Tool calling loop
+    for (let iteration = 0; iteration < 5; iteration++) {
+      const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: currentMessages,
+          tools,
+          tool_choice: 'auto',
+          max_tokens: 1500,
+          temperature: 0.7,
+          stream: true
+        })
+      });
+
+      if (!openaiResponse.ok) {
+        await stream.write(`data: ${JSON.stringify({error: 'OpenAI API error'})}\n\n`);
+        return;
+      }
+
+      const reader = openaiResponse.body?.getReader();
+      if (!reader) {
+        await stream.write(`data: ${JSON.stringify({error: 'No response body'})}\n\n`);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let toolCalls: any[] = [];
+      let contentBuffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta;
+
+              if (delta?.tool_calls) {
+                // Accumulate tool calls
+                for (const tc of delta.tool_calls) {
+                  if (!toolCalls[tc.index]) {
+                    toolCalls[tc.index] = { id: tc.id, type: 'function', function: { name: '', arguments: '' } };
+                  }
+                  if (tc.function?.name) toolCalls[tc.index].function.name += tc.function.name;
+                  if (tc.function?.arguments) toolCalls[tc.index].function.arguments += tc.function.arguments;
+                }
+              } else if (delta?.content) {
+                contentBuffer += delta.content;
+                await stream.write(`data: ${JSON.stringify({type: 'content', content: delta.content})}\n\n`);
+              }
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+
+      // Check if we have tool calls to execute
+      if (toolCalls.length > 0) {
+        await stream.write(`data: ${JSON.stringify({type: 'tool_calls_start', count: toolCalls.length})}\n\n`);
+
+        currentMessages.push({
+          role: 'assistant',
+          content: contentBuffer || null,
+          tool_calls: toolCalls
+        });
+
+        // Execute tools
+        for (const toolCall of toolCalls) {
+          const functionName = toolCall.function.name;
+          const functionArgs = JSON.parse(toolCall.function.arguments);
+          toolCallsUsed.push({ name: functionName, args: functionArgs });
+
+          await stream.write(`data: ${JSON.stringify({type: 'tool_call', name: functionName})}\n\n`);
+
+          let toolResult;
+          try {
+            switch (functionName) {
+              case 'get_outlier_columns':
+                toolResult = await executeGetOutlierColumns(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'get_correlation_analysis':
+                toolResult = await executeGetCorrelationAnalysis(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'get_column_statistics':
+                toolResult = await executeGetColumnStatistics(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'search_analyses':
+                toolResult = await executeSearchAnalyses(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'get_data_sample':
+                toolResult = await executeGetDataSample(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'get_missing_values':
+                toolResult = await executeGetMissingValues(c.env.DB, datasetId, functionArgs);
+                break;
+              case 'suggest_data_cleaning':
+                toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
+                break;
+              default:
+                toolResult = { error: `Unknown function: ${functionName}` };
+            }
+          } catch (error) {
+            toolResult = { error: `Failed to execute ${functionName}` };
+          }
+
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(toolResult)
+          });
+        }
+
+        contentBuffer = '';
+        continue; // Next iteration with tool results
+      }
+
+      // No more tool calls, we're done
+      break;
+    }
+
+    // Send tool calls used
+    await stream.write(`data: ${JSON.stringify({type: 'tool_calls_complete', tools: toolCallsUsed})}\n\n`);
+    
+    // Generate suggestions
+    const suggestions = generateSuggestions(message, []);
+    await stream.write(`data: ${JSON.stringify({type: 'suggestions', suggestions})}\n\n`);
+    
+    await stream.write(`data: ${JSON.stringify({type: 'done'})}\n\n`);
+  });
+});
+
 // Main chat endpoint (non-streaming for compatibility)
 chat.post('/:datasetId', async (c) => {
   try {

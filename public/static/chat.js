@@ -27,6 +27,131 @@ async function sendChatMessage() {
     addMessageToChat('user', message);
     input.value = '';
     
+    // Try streaming first, fallback to non-streaming on error
+    try {
+        await sendChatMessageStreaming(message);
+    } catch (error) {
+        console.error('Streaming failed, using fallback:', error);
+        await sendChatMessageFallback(message);
+    }
+}
+
+async function sendChatMessageStreaming(message) {
+    // Show typing indicator with streaming status
+    const typingDiv = addMessageToChat('assistant', '...', true);
+    
+    // Create streaming message container
+    const messagesContainer = document.getElementById('chat-messages');
+    const streamingDiv = document.createElement('div');
+    streamingDiv.className = 'chat-message assistant streaming-message';
+    streamingDiv.innerHTML = `
+        <div class="flex items-start gap-3 mb-3">
+            <div class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style="background: var(--accent); color: white;">
+                <i class="fas fa-brain text-sm"></i>
+            </div>
+            <div class="neu-card px-4 py-2 max-w-[80%]" style="color: var(--text-primary);">
+                <div class="streaming-content"></div>
+            </div>
+        </div>
+    `;
+    streamingDiv.style.display = 'none';
+    messagesContainer.appendChild(streamingDiv);
+    
+    const contentDiv = streamingDiv.querySelector('.streaming-content');
+    let accumulatedContent = '';
+    let toolCalls = [];
+    
+    // Make POST request to initiate streaming
+    const response = await fetch(`/api/chat/${currentDatasetId}/stream`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            message,
+            conversationHistory: chatHistory
+        })
+    });
+    
+    if (!response.ok) {
+        throw new Error('Streaming request failed');
+    }
+    
+    // Remove typing indicator, show streaming container
+    removeTypingIndicator();
+    streamingDiv.style.display = 'block';
+    
+    // Parse SSE stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                
+                try {
+                    const event = JSON.parse(data);
+                    
+                    if (event.type === 'content') {
+                        // Append content token
+                        accumulatedContent += event.content;
+                        contentDiv.innerHTML = formatMessage(accumulatedContent);
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                        
+                    } else if (event.type === 'tool_calls_start') {
+                        // Show tool execution indicator
+                        contentDiv.innerHTML = formatMessage(accumulatedContent) + 
+                            '<br><i class="fas fa-cog fa-spin text-sm"></i> <span style="color: var(--text-secondary); font-size: 0.9em;">Querying database...</span>';
+                        
+                    } else if (event.type === 'tool_call') {
+                        // Track tool call
+                        console.log('Tool executed:', event.name);
+                        
+                    } else if (event.type === 'tool_calls_complete') {
+                        // Remove tool indicator, store tools for badge display
+                        contentDiv.innerHTML = formatMessage(accumulatedContent);
+                        toolCalls = event.tools || [];
+                        
+                    } else if (event.type === 'suggestions') {
+                        // Will add suggestions after done
+                        
+                    } else if (event.type === 'done') {
+                        // Streaming complete
+                        break;
+                        
+                    } else if (event.error) {
+                        throw new Error(event.error);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse SSE event:', e);
+                }
+            }
+        }
+    }
+    
+    // Remove streaming class
+    streamingDiv.classList.remove('streaming-message');
+    
+    // Show tool call badges if any
+    if (toolCalls.length > 0) {
+        addToolCallBadges(toolCalls);
+    }
+    
+    // Store in history
+    chatHistory.push({ role: 'user', content: message });
+    chatHistory.push({ role: 'assistant', content: accumulatedContent });
+}
+
+async function sendChatMessageFallback(message) {
     // Show typing indicator
     addMessageToChat('assistant', '...', true);
     
@@ -98,6 +223,8 @@ function addMessageToChat(role, content, isTyping = false) {
     
     messagesContainer.appendChild(messageDiv);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    
+    return messageDiv; // Return element for reference
 }
 
 function removeTypingIndicator() {
