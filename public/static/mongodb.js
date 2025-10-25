@@ -108,8 +108,9 @@ async function importFromMongoDB() {
             showMongoDBStatus('success', 
                 `✓ Successfully imported ${response.data.stats.rows} documents! Analyzing...`);
             
-            // Start analysis
+            // Set global dataset ID (needed for chat)
             const datasetId = response.data.dataset_id;
+            currentDatasetId = datasetId;
             
             // Trigger analysis (same as file upload flow)
             setTimeout(async () => {
@@ -140,5 +141,45 @@ function showMongoDBStatus(type, message) {
     } else if (type === 'loading') {
         statusDiv.style.background = 'rgba(59, 130, 246, 0.1)';
         statusMessage.style.color = '#3b82f6';
+    }
+}
+
+async function generateMongoDBQuery(queryType) {
+    const promptInput = document.getElementById('mongodb-ai-prompt');
+    const prompt = promptInput.value.trim();
+    
+    if (!prompt) {
+        showMongoDBStatus('error', 'Please describe what you want to query');
+        return;
+    }
+    
+    showMongoDBStatus('loading', `Generating MongoDB ${queryType === 'aggregate' ? 'pipeline' : 'query'}...`);
+    
+    try {
+        // We need a temporary dataset ID to call the chat API
+        // For now, we'll use a direct OpenAI call simulation
+        // In a real scenario, you'd need to create a temporary dataset or use a different endpoint
+        
+        const response = await axios.post('/api/chat/generate-query', {
+            description: prompt,
+            query_type: queryType
+        });
+        
+        if (response.data.generated_query) {
+            const queryJson = JSON.stringify(response.data.generated_query, null, 2);
+            
+            if (queryType === 'aggregate') {
+                document.getElementById('mongodb-pipeline').value = queryJson;
+                showMongoDBStatus('success', '✓ Pipeline generated! Check the Aggregation Pipeline field below.');
+            } else {
+                document.getElementById('mongodb-query').value = queryJson;
+                showMongoDBStatus('success', '✓ Query generated! Check the Query field below.');
+            }
+        } else {
+            showMongoDBStatus('error', response.data.error || 'Failed to generate query');
+        }
+    } catch (error) {
+        console.error('Query generation error:', error);
+        showMongoDBStatus('error', 'Failed to generate query. Try asking in chat after importing data.');
     }
 }

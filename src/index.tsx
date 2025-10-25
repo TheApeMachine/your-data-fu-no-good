@@ -20,6 +20,80 @@ app.use('/api/*', cors());
 // Serve static files
 app.use('/static/*', serveStatic({ root: './public' }));
 
+// MongoDB query generation endpoint (standalone, no dataset needed)
+app.post('/api/chat/generate-query', async (c) => {
+  try {
+    const { description, query_type } = await c.req.json();
+    
+    const apiKey = c.env.OPENAI_API_KEY;
+    if (!apiKey || apiKey.includes('your-openai-api-key')) {
+      return c.json({ error: 'OpenAI API key not configured' }, 500);
+    }
+
+    const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const mongoPrompt = `You are a MongoDB query expert. Generate a valid MongoDB ${query_type === 'aggregate' ? 'aggregation pipeline' : 'query'} based on this description:
+
+"${description}"
+
+Guidelines:
+1. For 'find' queries: Return a valid MongoDB query object (JSON)
+2. For 'aggregate' pipelines: Return a valid MongoDB aggregation pipeline array (JSON)
+3. Use common MongoDB operators: $match, $group, $project, $sort, $limit, $lookup, $unwind, etc.
+4. Make realistic assumptions about field names if not specified
+5. Return ONLY valid JSON - no markdown, no extra text
+
+Examples:
+Find query: {"status": "active", "createdAt": {"$gte": "2024-01-01"}}
+Aggregate pipeline: [{"$match": {"status": "active"}}, {"$group": {"_id": "$category", "total": {"$sum": "$amount"}}}]
+
+Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
+
+    const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You are a MongoDB query expert. Generate valid MongoDB queries and pipelines.' },
+          { role: 'user', content: mongoPrompt }
+        ],
+        max_tokens: 1000,
+        temperature: 0.3
+      })
+    });
+
+    if (!openaiResponse.ok) {
+      return c.json({ error: 'Failed to generate MongoDB query' }, 500);
+    }
+
+    const data = await openaiResponse.json();
+    const generatedText = data.choices?.[0]?.message?.content || '';
+    
+    let queryJson = generatedText.trim();
+    queryJson = queryJson.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    
+    try {
+      const parsed = JSON.parse(queryJson);
+      return c.json({ 
+        generated_query: parsed,
+        query_type,
+        description 
+      });
+    } catch (e) {
+      return c.json({ 
+        error: 'Generated query is not valid JSON',
+        raw_output: generatedText 
+      }, 400);
+    }
+
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to generate query' }, 500);
+  }
+});
+
 // API routes
 app.route('/api/upload', upload);
 app.route('/api/upload/mongodb', mongodbUpload);
@@ -283,6 +357,31 @@ app.get('/', (c) => {
                                             <input type="text" id="mongodb-collection" placeholder="myCollection"
                                                    class="w-full p-3 rounded-lg neu-card-inset" 
                                                    style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                        </div>
+                                    </div>
+
+                                    <!-- AI Query Generator -->
+                                    <div class="neu-card p-4 rounded-lg" style="background: rgba(59, 130, 246, 0.05); border: 1px solid rgba(59, 130, 246, 0.2);">
+                                        <div class="flex items-start gap-3 mb-3">
+                                            <i class="fas fa-robot text-2xl" style="color: var(--accent);"></i>
+                                            <div class="flex-1">
+                                                <h4 class="font-semibold mb-1" style="color: var(--text-primary);">AI Query Helper</h4>
+                                                <p class="text-xs mb-2" style="color: var(--text-secondary);">
+                                                    Describe what you want to query in plain English, and AI will generate the MongoDB syntax for you!
+                                                </p>
+                                                <input type="text" id="mongodb-ai-prompt" 
+                                                       placeholder='e.g., "Find all active users from last month" or "Group sales by category and sum totals"'
+                                                       class="w-full p-2 rounded-lg neu-card-inset text-sm mb-2" 
+                                                       style="background: var(--bg-primary); color: var(--text-primary); border: none;">
+                                                <div class="flex gap-2">
+                                                    <button onclick="generateMongoDBQuery('find')" class="neu-button text-xs px-3 py-1">
+                                                        <i class="fas fa-magic mr-1"></i>Generate Query
+                                                    </button>
+                                                    <button onclick="generateMongoDBQuery('aggregate')" class="neu-button text-xs px-3 py-1">
+                                                        <i class="fas fa-code-branch mr-1"></i>Generate Pipeline
+                                                    </button>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
 
