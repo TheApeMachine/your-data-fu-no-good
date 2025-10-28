@@ -22,6 +22,10 @@ export async function generateVisualizations(
 ): Promise<void> {
   console.log(`Generating visualizations for dataset ${datasetId}`);
 
+  await db.prepare(`
+    DELETE FROM visualizations WHERE dataset_id = ?
+  `).bind(datasetId).run();
+
   // Fetch column mappings to add enrichment indicators
   const mappingsResult = await db.prepare(`
     SELECT id_column, name_column FROM column_mappings WHERE dataset_id = ?
@@ -82,6 +86,9 @@ function createVisualizationForAnalysis(
     
     case 'outlier':
       return createOutlierChart(analysis, rows, mappingsMap);
+
+    case 'anomaly':
+      return createAnomalyChart(analysis, rows, mappingsMap);
     
     case 'pattern':
       return createPatternChart(analysis, rows, mappingsMap);
@@ -322,6 +329,75 @@ function createOutlierChart(analysis: Analysis, rows: Record<string, any>[], map
   };
 }
 
+function createAnomalyChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
+  const colName = analysis.column_name;
+  if (!colName) return null;
+
+  const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
+  const anomalyIndices = Array.isArray(analysis.result?.indices) ? analysis.result.indices : [];
+  const anomalySet = new Set<number>(anomalyIndices);
+
+  const values = rows.map((r, idx) => ({
+    x: idx,
+    y: Number(r[colName]),
+    isAnomaly: anomalySet.has(idx)
+  })).filter(p => !isNaN(p.y));
+
+  if (values.length === 0) return null;
+
+  const normalPoints = values.filter(p => !p.isAnomaly);
+  const anomalyPoints = values.filter(p => p.isAnomaly);
+  const share = analysis.result?.share;
+
+  return {
+    chartType: 'scatter',
+    title: `Key anomalies: ${colName}${enrichmentSuffix}`,
+    explanation: `Highlighted dots show the rows triggering the anomaly alert${enrichmentSuffix ? ' (using human-readable names)' : ''}. They sit well outside the usual range and should be reviewed individually.${typeof share === 'number' ? ` About ${share}% of available rows are affected.` : ''}`,
+    config: {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'Typical values',
+            data: normalPoints,
+            backgroundColor: 'rgba(59, 130, 246, 0.4)',
+            borderColor: 'rgba(59, 130, 246, 0.9)',
+            borderWidth: 1,
+            pointRadius: 3
+          },
+          {
+            label: 'Anomalies',
+            data: anomalyPoints,
+            backgroundColor: 'rgba(234, 88, 12, 0.85)',
+            borderColor: 'rgba(194, 65, 12, 1)',
+            borderWidth: 2,
+            pointRadius: 6
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, position: 'top' },
+          title: {
+            display: true,
+            text: `${colName} anomaly spotlight`
+          }
+        },
+        scales: {
+          x: {
+            title: { display: true, text: 'Record index' }
+          },
+          y: {
+            title: { display: true, text: colName }
+          }
+        }
+      }
+    }
+  };
+}
+
 function createPatternChart(analysis: Analysis, rows: Record<string, any>[], mappingsMap: Map<string, string>) {
   const colName = analysis.column_name;
   if (!colName) return null;
@@ -334,6 +410,8 @@ function createPatternChart(analysis: Analysis, rows: Record<string, any>[], map
 
   // Limit to top 8 for readability
   const limited = topPatterns.slice(0, 8);
+  const labels = limited.map((item: any) => Array.isArray(item) ? item[0] : item.value);
+  const data = limited.map((item: any) => Array.isArray(item) ? item[1] : item.count);
   
   return {
     chartType: 'pie',
@@ -342,9 +420,9 @@ function createPatternChart(analysis: Analysis, rows: Record<string, any>[], map
     config: {
       type: 'pie',
       data: {
-        labels: limited.map(([label]: [string, number]) => label),
+        labels,
         datasets: [{
-          data: limited.map(([, count]: [string, number]) => count),
+          data,
           backgroundColor: [
             'rgba(59, 130, 246, 0.8)',
             'rgba(16, 185, 129, 0.8)',

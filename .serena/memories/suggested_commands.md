@@ -1,0 +1,14 @@
+## Suggested commands
+- Install deps: `npm install`
+- Local dev (Vite + Hono w/ Wrangler dev server): `npm run dev`
+- Cloudflare Pages sandbox that mirrors production bindings/D1: `npm run dev:sandbox` (uses `wrangler pages dev dist --d1=webapp-production --local --ip 0.0.0.0 --port 3000`)
+- Build static assets/worker bundle: `npm run build` (outputs to `dist/`)
+- Preview production-like worker: `npm run preview` or `wrangler pages dev`
+- Deploy to Cloudflare Pages: `npm run deploy`
+- Generate Cloudflare binding types: `npm run cf-typegen`
+- Apply D1 migrations locally: `npm run db:migrate:local`
+- Open a local D1 console: `npm run db:console:local`
+- Kill lingering dev port: `npm run clean-port`
+- Exercise the 7 AI chat tools against a running server: `./test-tools.sh` (requires curl + jq, adjust DATASET_ID/BASE_URL)
+- PM2 watchers (optional) defined in `ecosystem.config.cjs`; `pm2 start ecosystem.config.cjs` followed by `pm2 logs webapp` to inspect tool-call output.
+- macOS/Darwin basics available: `ls`, `rg`, `git status`, `npm`, `wrangler`, `curl`, `jq`.

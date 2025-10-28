@@ -1,7 +1,9 @@
 // Type definitions for the data intelligence platform
 
+import type { DatabaseBinding } from './storage/types';
+
 export type Bindings = {
-  DB: D1Database;
+  DB: DatabaseBinding;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   MONGODB_CONNECTION_STRING?: string;
@@ -29,12 +31,40 @@ export interface MongoDBConfig {
   pipeline?: string; // JSON string of aggregation pipeline
 }
 
+export type ColumnBaseType = 'number' | 'string' | 'date' | 'datetime' | 'boolean';
+
+export interface ColumnProfile {
+  base_type: ColumnBaseType;
+  semantic_type?: string;
+  confidence: number;
+  unique_count: number;
+  unique_ratio: number;
+  null_count: number;
+  non_null_count: number;
+  total_count: number;
+  is_categorical?: boolean;
+  is_identifier?: boolean;
+  numeric_subtype?: 'integer' | 'float';
+  sample_value?: any;
+  sample_values?: any[];
+  notes?: string[];
+  stats?: {
+    min?: number;
+    max?: number;
+    mean?: number;
+    stddev?: number;
+    skewness?: number;
+  };
+}
+
 export interface ColumnDefinition {
   name: string;
-  type: 'number' | 'string' | 'date' | 'boolean';
+  type: ColumnBaseType;
   nullable: boolean;
   unique_count?: number;
   sample_values?: any[];
+  semantic_type?: string;
+  profile?: ColumnProfile;
 }
 
 export interface DataRow {
@@ -48,7 +78,7 @@ export interface DataRow {
 export interface Analysis {
   id: number;
   dataset_id: number;
-  analysis_type: 'statistics' | 'correlation' | 'outlier' | 'pattern' | 'trend' | 'clustering';
+  analysis_type: 'statistics' | 'correlation' | 'outlier' | 'anomaly' | 'pattern' | 'trend' | 'timeseries' | 'missing' | 'feature' | 'clustering';
   column_name?: string;
   result: any;
   confidence: number;
@@ -92,4 +122,14 @@ export interface StatisticalSummary {
   quartiles?: number[];
   null_count: number;
   unique_count: number;
+}
+
+export interface FeatureSuggestion {
+  name: string;
+  description: string;
+  columns: string[];
+  transformation: string;
+  confidence: number;
+  expected_benefit?: string;
+  notes?: string[];
 }

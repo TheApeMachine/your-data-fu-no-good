@@ -1,13 +1,36 @@
 // Automated data analysis engine
 
-import { calculateStats, detectOutliers, calculateCorrelation, detectTrend, analyzeTimeSeries } from './statistics';
+import {
+  calculateStats,
+  detectOutliers,
+  detectRobustAnomalies,
+  calculateCorrelation,
+  calculateSpearmanCorrelation,
+  calculateMutualInformationMetrics,
+  detectTrend,
+  analyzeTimeSeries,
+} from './statistics';
 import { scoreInsightQuality } from './quality-scorer';
-import type { Analysis } from '../types';
+import { deriveFeatureSuggestions } from './feature-engineer';
+import type { ColumnDefinition, FeatureSuggestion } from '../types';
+import {
+  describeAnomalies,
+  describeCorrelation,
+  describeFeatureSuggestion,
+  describeMissingData,
+  describeOutliers,
+  describePattern,
+  describeStatistics,
+  describeTimeSeriesInsight,
+  describeTrend,
+} from './insight-writer';
+
+const MAX_CORRELATION_SAMPLE = 1500;
 
 export async function analyzeDataset(
   datasetId: number,
   rows: Record<string, any>[],
-  columns: { name: string, type: string }[],
+  columns: ColumnDefinition[],
   db: D1Database
 ): Promise<void> {
   console.log(`Starting analysis for dataset ${datasetId}`);
@@ -15,8 +38,8 @@ export async function analyzeDataset(
   // 1. Statistical analysis for each column
   for (const col of columns) {
     // Clean values: filter out null, undefined, empty strings, and whitespace-only strings
-    const values = rows
-      .map(r => r[col.name])
+    const rawValues = rows.map(r => r[col.name]);
+    const values = rawValues
       .filter(v => {
         if (v === null || v === undefined) return false;
         if (typeof v === 'string') {
@@ -26,10 +49,14 @@ export async function analyzeDataset(
         return true;
       });
     
-    const stats = calculateStats(values, col.type);
+    const stats = calculateStats(rawValues, col.type);
 
     // Store statistics analysis
-    const explanation = generateStatsExplanation(col.name, col.type, stats);
+    const statsDescription = describeStatistics(col, stats);
+    const statsPayload = {
+      ...stats,
+      insight_actions: statsDescription.actions ?? [],
+    };
     const importance = determineImportance(stats, col.type);
     const qualityScore = scoreInsightQuality('statistics', col.name, stats, stats);
 
@@ -40,12 +67,42 @@ export async function analyzeDataset(
       datasetId,
       'statistics',
       col.name,
-      JSON.stringify(stats),
+      JSON.stringify(statsPayload),
       1.0,
-      explanation,
+      statsDescription.text,
       importance,
       qualityScore.score
     ).run();
+
+    if (stats.nullCount > 0) {
+      const missingPercentage = stats.count > 0 ? (stats.nullCount / stats.count) * 100 : 0;
+      const missingResult = {
+        count: stats.nullCount,
+        percentage: Number(missingPercentage.toFixed(2)),
+        total: stats.count
+      };
+      const missingDescription = describeMissingData(col, missingResult, stats);
+      const missingPayload = {
+        ...missingResult,
+        insight_actions: missingDescription.actions ?? [],
+      };
+      const missingImportance = missingPercentage > 20 ? 'high' : missingPercentage > 5 ? 'medium' : 'low';
+      const missingQuality = scoreInsightQuality('missing', col.name, missingResult, stats);
+
+      await db.prepare(`
+        INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        datasetId,
+        'missing',
+        col.name,
+        JSON.stringify(missingPayload),
+        1.0,
+        missingDescription.text,
+        missingImportance,
+        missingQuality.score
+      ).run();
+    }
 
     // 2. Outlier detection for numeric columns
     if (col.type === 'number') {
@@ -53,8 +110,18 @@ export async function analyzeDataset(
       const outliers = detectOutliers(numbers);
 
       if (outliers.indices.length > 0) {
-        const outlierExplanation = `Found ${outliers.indices.length} unusual values in "${col.name}" (${((outliers.indices.length / numbers.length) * 100).toFixed(1)}% of data). These values are significantly different from the rest and might need attention.`;
-        const outlierResult = { count: outliers.indices.length, indices: outliers.indices.slice(0, 10) };
+        const outlierPercentage = numbers.length > 0 ? (outliers.indices.length / numbers.length) * 100 : 0;
+        const outlierResult = {
+          count: outliers.indices.length,
+          percentage: Number(outlierPercentage.toFixed(2)),
+          indices: outliers.indices.slice(0, 25),
+          values: outliers.indices.slice(0, 25).map(idx => numbers[idx]),
+        };
+        const outlierDescription = describeOutliers(col, outlierResult, stats);
+        const outlierPayload = {
+          ...outlierResult,
+          insight_actions: outlierDescription.actions ?? [],
+        };
         const outlierQuality = scoreInsightQuality('outlier', col.name, outlierResult, stats);
         
         await db.prepare(`
@@ -64,10 +131,10 @@ export async function analyzeDataset(
           datasetId,
           'outlier',
           col.name,
-          JSON.stringify(outlierResult),
+          JSON.stringify(outlierPayload),
           0.85,
-          outlierExplanation,
-          outliers.indices.length > numbers.length * 0.05 ? 'high' : 'medium',
+          outlierDescription.text,
+          outlierPercentage > 5 ? 'high' : 'medium',
           outlierQuality.score
         ).run();
       }
@@ -76,7 +143,11 @@ export async function analyzeDataset(
       if (numbers.length > 5) {
         const trend = detectTrend(numbers);
         if (trend.direction !== 'stable') {
-          const trendExplanation = `"${col.name}" shows a ${trend.direction === 'up' ? 'rising' : 'falling'} trend with ${(trend.strength * 100).toFixed(0)}% strength. This ${trend.direction === 'up' ? 'increase' : 'decrease'} is consistent across the dataset.`;
+          const trendDescription = describeTrend(col, trend, stats);
+          const trendPayload = {
+            ...trend,
+            insight_actions: trendDescription.actions ?? [],
+          };
           const trendQuality = scoreInsightQuality('trend', col.name, trend, stats);
           
           await db.prepare(`
@@ -86,50 +157,165 @@ export async function analyzeDataset(
             datasetId,
             'trend',
             col.name,
-            JSON.stringify(trend),
+            JSON.stringify(trendPayload),
             trend.strength,
-            trendExplanation,
+            trendDescription.text,
             trend.strength > 0.5 ? 'high' : 'medium',
             trendQuality.score
           ).run();
         }
       }
     }
+
+    if (col.type === 'number') {
+      const numericSeries = rows
+        .map((r, idx) => ({ value: Number(r[col.name]), index: idx }))
+        .filter(p => !isNaN(p.value));
+
+      const anomalies = detectRobustAnomalies(numericSeries, { threshold: 3.2, maxResults: 10 });
+
+      if (anomalies.length > 0) {
+        const share = numericSeries.length > 0 ? (anomalies.length / numericSeries.length) * 100 : 0;
+        const topSignal = anomalies[0];
+
+        const anomalyResult = {
+          total_anomalies: anomalies.length,
+          share: Number(share.toFixed(2)),
+          threshold: 3.2,
+          median: stats.median,
+          anomalies: anomalies.slice(0, 5).map(a => ({
+            row: a.index + 1,
+            value: a.value,
+            score: Number(a.score.toFixed(2)),
+            direction: a.direction,
+            percentile: Number(a.percentileRank.toFixed(1))
+          })),
+          indices: anomalies.map(a => a.index),
+          values: anomalies.map(a => a.value)
+        };
+
+        const anomalyImportance = share >= 10 ? 'high' : share >= 4 ? 'medium' : 'low';
+        const anomalyQuality = scoreInsightQuality('anomaly', col.name, anomalyResult, {
+          count: numericSeries.length,
+          nullCount: stats.nullCount,
+          uniqueCount: stats.uniqueCount
+        });
+        const anomalyDescription = describeAnomalies(col, anomalyResult, stats);
+        const anomalyPayload = {
+          ...anomalyResult,
+          insight_actions: anomalyDescription.actions ?? [],
+        };
+
+        await db.prepare(`
+          INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          datasetId,
+          'anomaly',
+          col.name,
+          JSON.stringify(anomalyPayload),
+          Math.min(topSignal.score / 10, 1),
+          anomalyDescription.text,
+          anomalyImportance,
+          anomalyQuality.score
+        ).run();
+      }
+    }
   }
 
-  // 4. Correlation analysis between numeric columns
+  // 4. Correlation and dependency analysis between numeric columns
   const numericColumns = columns.filter(c => c.type === 'number');
   for (let i = 0; i < numericColumns.length; i++) {
     for (let j = i + 1; j < numericColumns.length; j++) {
       const col1 = numericColumns[i];
       const col2 = numericColumns[j];
 
-      const values1 = rows.map(r => Number(r[col1.name])).filter(n => !isNaN(n));
-      const values2 = rows.map(r => Number(r[col2.name])).filter(n => !isNaN(n));
-
-      if (values1.length > 5 && values2.length > 5) {
-        const correlation = calculateCorrelation(values1, values2);
-
-        if (Math.abs(correlation) > 0.5) {
-          const corrExplanation = generateCorrelationExplanation(col1.name, col2.name, correlation);
-          const corrResult = { column1: col1.name, column2: col2.name, correlation };
-          const corrQuality = scoreInsightQuality('correlation', undefined, corrResult, { count: values1.length });
-          
-          await db.prepare(`
-            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            datasetId,
-            'correlation',
-            `${col1.name}_vs_${col2.name}`,
-            JSON.stringify(corrResult),
-            Math.abs(correlation),
-            corrExplanation,
-            Math.abs(correlation) > 0.7 ? 'high' : 'medium',
-            corrQuality.score
-          ).run();
+      const pairedValues: Array<[number, number]> = [];
+      for (const row of rows) {
+        const raw1 = row[col1.name];
+        const raw2 = row[col2.name];
+        const num1 = typeof raw1 === 'number' ? raw1 : Number(raw1);
+        const num2 = typeof raw2 === 'number' ? raw2 : Number(raw2);
+        if (Number.isFinite(num1) && Number.isFinite(num2)) {
+          pairedValues.push([num1, num2]);
         }
       }
+
+      if (pairedValues.length < 6) continue;
+
+      const sampleStep = Math.max(1, Math.floor(pairedValues.length / MAX_CORRELATION_SAMPLE));
+      const sampleX: number[] = [];
+      const sampleY: number[] = [];
+      for (let idx = 0; idx < pairedValues.length; idx += sampleStep) {
+        const [vx, vy] = pairedValues[idx];
+        sampleX.push(vx);
+        sampleY.push(vy);
+      }
+
+      if (sampleX.length < 6) continue;
+
+      const pearson = calculateCorrelation(sampleX, sampleY);
+      const spearman = calculateSpearmanCorrelation(sampleX, sampleY);
+      const miMetrics = calculateMutualInformationMetrics(sampleX, sampleY);
+      const normalizedMI = Number.isFinite(miMetrics.normalized) ? miMetrics.normalized : 0;
+
+      const candidates: Array<{ type: 'pearson' | 'spearman' | 'nmi'; value: number }> = [];
+      if (Number.isFinite(pearson)) {
+        candidates.push({ type: 'pearson', value: pearson });
+      }
+      if (Number.isFinite(spearman)) {
+        candidates.push({ type: 'spearman', value: spearman });
+      }
+      if (normalizedMI > 0) {
+        candidates.push({ type: 'nmi', value: normalizedMI });
+      }
+
+      if (candidates.length === 0) continue;
+
+      candidates.sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+      const bestMetric = candidates[0];
+      const bestStrength = bestMetric.type === 'nmi' ? bestMetric.value : Math.abs(bestMetric.value);
+      if (bestStrength < 0.45) continue;
+
+      const confidence = Math.min(1, bestStrength);
+      const importance = bestStrength > 0.75 ? 'high' : 'medium';
+
+      const corrResult = {
+        column1: col1.name,
+        column2: col2.name,
+        correlation: pearson,
+        pearson,
+        spearman,
+        mutual_information: miMetrics.mi,
+        normalized_mutual_information: normalizedMI,
+        sample_size: pairedValues.length,
+        sampled_size: sampleX.length,
+        best_metric: bestMetric.type,
+        best_metric_value: bestMetric.value,
+        best_strength: bestStrength,
+      };
+
+      const corrDescription = describeCorrelation(col1.name, col2.name, corrResult);
+      const corrPayload = {
+        ...corrResult,
+        insight_actions: corrDescription.actions ?? [],
+      };
+
+      const corrQuality = scoreInsightQuality('correlation', undefined, corrResult, { count: sampleX.length });
+
+      await db.prepare(`
+        INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        datasetId,
+        'correlation',
+        `${col1.name}_vs_${col2.name}`,
+        JSON.stringify(corrPayload),
+        confidence,
+        corrDescription.text,
+        importance,
+        corrQuality.score
+      ).run();
     }
   }
 
@@ -147,13 +333,17 @@ export async function analyzeDataset(
       const tsStats = analyzeTimeSeries(dates, values.map(v => Number(v)));
       
       if (tsStats && (tsStats.trend.strength > 0.3 || tsStats.seasonality !== 'none')) {
-        const timeseriesExplanation = generateTimeSeriesExplanation(dateCol.name, numCol.name, tsStats);
         const timeseriesResult = {
           dateColumn: dateCol.name,
           valueColumn: numCol.name,
           ...tsStats,
           // Don't serialize the full points array in result (too large)
           points: tsStats.points.length
+        };
+        const timeseriesDescription = describeTimeSeriesInsight(dateCol.name, numCol.name, tsStats);
+        const timeseriesPayload = {
+          ...timeseriesResult,
+          insight_actions: timeseriesDescription.actions ?? [],
         };
         
         const importance = tsStats.trend.strength > 0.6 || tsStats.seasonality !== 'none' ? 'high' : 'medium';
@@ -166,9 +356,9 @@ export async function analyzeDataset(
           datasetId,
           'timeseries',
           `${dateCol.name}_${numCol.name}`,
-          JSON.stringify(timeseriesResult),
+          JSON.stringify(timeseriesPayload),
           tsStats.trend.strength,
-          timeseriesExplanation,
+          timeseriesDescription.text,
           importance,
           tsQuality.score
         ).run();
@@ -201,10 +391,29 @@ export async function analyzeDataset(
       const topPatterns = sorted.slice(0, 5);
 
       if (topPatterns.length > 0 && topPatterns[0][1] > values.length * 0.1) {
-        const patternExplanation = `The most common value in "${col.name}" is "${topPatterns[0][0]}" appearing ${topPatterns[0][1]} times (${((topPatterns[0][1] / values.length) * 100).toFixed(1)}% of records).`;
-        const patternResult = { topPatterns };
-        const patternStats = { count: values.length, uniqueCount: new Set(values).size };
+        const totalCount = values.length;
+        const uniqueCount = new Set(values).size;
+        const patternEntries = topPatterns.map(([value, count]) => ({
+          value,
+          count,
+          percentage: Number(((count / totalCount) * 100).toFixed(2))
+        }));
+        const primaryPattern = patternEntries[0];
+        const patternResult = {
+          topPatterns: patternEntries,
+          totalCount,
+          uniqueCount,
+          mode: primaryPattern.value,
+          modeCount: primaryPattern.count,
+          modePercentage: primaryPattern.percentage
+        };
+        const patternStats = { count: totalCount, uniqueCount };
         const patternQuality = scoreInsightQuality('pattern', col.name, patternResult, patternStats);
+        const patternDescription = describePattern(col, patternResult);
+        const patternPayload = {
+          ...patternResult,
+          insight_actions: patternDescription.actions ?? [],
+        };
         
         await db.prepare(`
           INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
@@ -213,9 +422,9 @@ export async function analyzeDataset(
           datasetId,
           'pattern',
           col.name,
-          JSON.stringify(patternResult),
+          JSON.stringify(patternPayload),
           0.9,
-          patternExplanation,
+          patternDescription.text,
           'medium',
           patternQuality.score
         ).run();
@@ -224,23 +433,37 @@ export async function analyzeDataset(
   }
 
   console.log(`Analysis complete for dataset ${datasetId}`);
-}
 
-function generateStatsExplanation(colName: string, colType: string, stats: any): string {
-  if (colType === 'number') {
-    return `"${colName}" ranges from ${stats.min?.toFixed(2)} to ${stats.max?.toFixed(2)} with an average of ${stats.mean?.toFixed(2)}. About half the values are below ${stats.median?.toFixed(2)}.`;
-  }
-  return `"${colName}" contains ${stats.count} values with ${stats.uniqueCount} unique entries. Most common: "${stats.mode}".`;
-}
+  const featureSuggestions: FeatureSuggestion[] = deriveFeatureSuggestions(rows, columns);
+  if (featureSuggestions.length > 0) {
+    for (const suggestion of featureSuggestions) {
+      const importance =
+        suggestion.confidence >= 0.75 ? 'high' : suggestion.confidence >= 0.5 ? 'medium' : 'low';
+      const quality = scoreInsightQuality('feature', suggestion.columns[0], suggestion, {
+        count: rows.length,
+        uniqueCount: suggestion.columns.length,
+        nullCount: 0,
+      });
+      const featureDescription = describeFeatureSuggestion(suggestion);
+      const featurePayload = {
+        ...suggestion,
+        insight_actions: featureDescription.actions ?? [],
+      };
 
-function generateCorrelationExplanation(col1: string, col2: string, correlation: number): string {
-  const strength = Math.abs(correlation) > 0.7 ? 'strong' : 'moderate';
-  const direction = correlation > 0 ? 'positive' : 'negative';
-  
-  if (correlation > 0) {
-    return `There's a ${strength} relationship between "${col1}" and "${col2}": when ${col1} increases, ${col2} tends to increase too (correlation: ${correlation.toFixed(2)}).`;
-  } else {
-    return `There's a ${strength} inverse relationship between "${col1}" and "${col2}": when ${col1} increases, ${col2} tends to decrease (correlation: ${correlation.toFixed(2)}).`;
+      await db.prepare(`
+        INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        datasetId,
+        'feature',
+        suggestion.columns.join(', '),
+        JSON.stringify(featurePayload),
+        suggestion.confidence,
+        featureDescription.text,
+        importance,
+        quality.score
+      ).run();
+    }
   }
 }
 
@@ -249,39 +472,4 @@ function determineImportance(stats: any, colType: string): 'low' | 'medium' | 'h
   if (stats.uniqueCount === 1) return 'low'; // All same value
   if (colType === 'number' && stats.stdDev > stats.mean) return 'high'; // High variance
   return 'medium';
-}
-
-function generateTimeSeriesExplanation(dateCol: string, valueCol: string, stats: any): string {
-  const parts: string[] = [];
-  
-  // Date range
-  const firstDate = new Date(stats.firstDate).toLocaleDateString();
-  const lastDate = new Date(stats.lastDate).toLocaleDateString();
-  parts.push(`Time series analysis of "${valueCol}" from ${firstDate} to ${lastDate}`);
-  
-  // Trend
-  if (stats.trend.strength > 0.3) {
-    const direction = stats.trend.direction === 'up' ? 'upward' : 'downward';
-    const strength = stats.trend.strength > 0.7 ? 'strong' : 'moderate';
-    parts.push(`Shows a ${strength} ${direction} trend (${(stats.trend.strength * 100).toFixed(0)}% strength)`);
-  }
-  
-  // Growth rate
-  if (stats.growthRate !== undefined && Math.abs(stats.growthRate) > 5) {
-    const change = stats.growthRate > 0 ? 'increase' : 'decrease';
-    parts.push(`Overall ${change} of ${Math.abs(stats.growthRate).toFixed(1)}% over the period`);
-  }
-  
-  // Seasonality
-  if (stats.seasonality && stats.seasonality !== 'none') {
-    parts.push(`Exhibits ${stats.seasonality} seasonal patterns`);
-  }
-  
-  // Volatility
-  if (stats.volatility > 0.3) {
-    const level = stats.volatility > 0.5 ? 'high' : 'moderate';
-    parts.push(`${level} volatility (${(stats.volatility * 100).toFixed(0)}% variation)`);
-  }
-  
-  return parts.join('. ') + '.';
 }

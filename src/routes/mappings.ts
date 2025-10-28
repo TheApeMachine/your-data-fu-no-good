@@ -2,6 +2,7 @@
 
 import { Hono } from 'hono';
 import type { Bindings } from '../types';
+import { resolveDatabase } from '../storage';
 
 const mappings = new Hono<{ Bindings: Bindings }>();
 
@@ -9,8 +10,9 @@ const mappings = new Hono<{ Bindings: Bindings }>();
 mappings.get('/:datasetId', async (c) => {
   try {
     const datasetId = c.req.param('datasetId');
+    const db = resolveDatabase(c.env);
 
-    const result = await c.env.DB.prepare(`
+    const result = await db.prepare(`
       SELECT * FROM column_mappings WHERE dataset_id = ? ORDER BY id_column
     `).bind(datasetId).all();
 
@@ -29,7 +31,9 @@ mappings.delete('/:id', async (c) => {
   try {
     const id = c.req.param('id');
 
-    await c.env.DB.prepare(`
+    const db = resolveDatabase(c.env);
+
+    await db.prepare(`
       DELETE FROM column_mappings WHERE id = ?
     `).bind(id).run();
 
@@ -46,7 +50,9 @@ mappings.post('/', async (c) => {
   try {
     const { dataset_id, id_column, name_column } = await c.req.json();
 
-    await c.env.DB.prepare(`
+    const db = resolveDatabase(c.env);
+
+    await db.prepare(`
       INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)
       VALUES (?, ?, ?, 0)
     `).bind(dataset_id, id_column, name_column).run();

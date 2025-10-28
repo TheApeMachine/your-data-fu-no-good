@@ -1,6 +1,7 @@
 // Data cleaning utilities with multiple cleaning levels
 
 import { detectOutliers } from './statistics';
+import type { ColumnDefinition } from '../types';
 
 export type CleaningLevel = 'light' | 'standard' | 'aggressive';
 
@@ -25,7 +26,7 @@ export interface CleaningResult {
  */
 export function cleanDataset(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[],
+  columns: ColumnDefinition[],
   options: CleaningOptions
 ): CleaningResult {
   const actions: string[] = [];
@@ -116,7 +117,7 @@ export function cleanDataset(
  */
 function removeRowsWithTooManyEmpties(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[],
+  columns: ColumnDefinition[],
   threshold: number
 ): Record<string, any>[] {
   return rows.filter(row => {
@@ -151,7 +152,7 @@ function removeDuplicateRows(rows: Record<string, any>[]): Record<string, any>[]
  */
 function trimWhitespace(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[]
+  columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
   
@@ -187,7 +188,7 @@ function removeRowsWithEmptyKeys(
  */
 function standardizeText(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[]
+  columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
   
@@ -209,7 +210,7 @@ function standardizeText(
  */
 function fillNumericGaps(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[]
+  columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const numericColumns = columns.filter(c => c.type === 'number').map(c => c.name);
   
@@ -249,7 +250,7 @@ function fillNumericGaps(
  */
 function removeOutlierRows(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[]
+  columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const numericColumns = columns.filter(c => c.type === 'number').map(c => c.name);
   
@@ -284,7 +285,7 @@ function removeOutlierRows(
  */
 function removeRareCategoryRows(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[],
+  columns: ColumnDefinition[],
   threshold: number
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
@@ -335,7 +336,7 @@ function removeRareCategoryRows(
  */
 export function suggestKeyColumns(
   rows: Record<string, any>[],
-  columns: { name: string; type: string }[]
+  columns: ColumnDefinition[]
 ): string[] {
   const suggestions: string[] = [];
   

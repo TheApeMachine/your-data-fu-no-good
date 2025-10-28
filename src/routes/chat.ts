@@ -3,6 +3,7 @@
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import type { Bindings } from '../types';
+import { resolveDatabase } from '../storage';
 
 const chat = new Hono<{ Bindings: Bindings }>();
 
@@ -403,12 +404,13 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
       });
     }
     
-    if (type === 'pattern' && res.mode_frequency > 80) {
+    const modePercentage = res.modePercentage ?? res.mode_frequency;
+    if (type === 'pattern' && modePercentage > 80) {
       suggestions.push({
         column: r.column_name,
         issue: 'low_variance',
         severity: 'low',
-        suggestion: `Column has very low variance (${res.mode_frequency}% same value). Consider removing if not meaningful.`,
+        suggestion: `Column has very low variance (${modePercentage}% same value). Consider removing if not meaningful.`,
         details: r.explanation
       });
     }
@@ -527,21 +529,30 @@ chat.post('/:datasetId/stream', async (c) => {
   }
 
   // Fetch dataset context
-  const dataset = await c.env.DB.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
+  const db = resolveDatabase(c.env);
+  const dataset = await db.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
   if (!dataset) {
     return c.json({ error: 'Dataset not found' }, 404);
   }
 
   const columns = JSON.parse(dataset.columns as string);
-  const systemPrompt = `You are a data analysis assistant helping users understand their dataset.
+  const systemPrompt = `You are a friendly insight assistant for business users with limited data-science background.
 
-Dataset: ${dataset.name}
+Dataset name: ${dataset.name}
 Rows: ${dataset.row_count}
 Columns: ${dataset.column_count}
 
-Available columns: ${columns.slice(0, 50).map((c: any) => c.name).join(', ')}${columns.length > 50 ? `, ... and ${columns.length - 50} more` : ''}
+Available tools let you fetch precise facts (statistics, correlations, samples, data quality issues, cleaning tips, MongoDB queries). Use them when you need evidence, then translate the meaning into plain language.
 
-You have access to tools to query specific analyses. Use tools to get specific data when asked.`;
+Guidelines:
+- Lead with the story, not the stats. Start every answer with 2–3 bullet points titled "What this means" that explain the impact or pattern in everyday words.
+- Mention numbers only when they change the decision (round them sensibly, e.g. “about 84% missing”).
+- Highlight data quality risks, but immediately suggest what the user could do about them (cleaning option, extra column to create, question to ask the data owner).
+- Finish with a short "Suggested next steps" list (max 3 bullets) that keeps the user moving forward.
+- Never dump raw tables or long lists of metrics. The user wants actionable intelligence, not diagnostics.
+- If the user asks for a query or deeper dive, call the appropriate tool and summarise the result in the same approachable tone.
+
+Keep answers concise (under 4 short paragraphs total) and make sure every piece of evidence is tied to why it matters.`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -648,28 +659,28 @@ You have access to tools to query specific analyses. Use tools to get specific d
           try {
             switch (functionName) {
               case 'get_outlier_columns':
-                toolResult = await executeGetOutlierColumns(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetOutlierColumns(db, datasetId, functionArgs);
                 break;
               case 'get_correlation_analysis':
-                toolResult = await executeGetCorrelationAnalysis(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetCorrelationAnalysis(db, datasetId, functionArgs);
                 break;
               case 'get_column_statistics':
-                toolResult = await executeGetColumnStatistics(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetColumnStatistics(db, datasetId, functionArgs);
                 break;
               case 'search_analyses':
-                toolResult = await executeSearchAnalyses(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeSearchAnalyses(db, datasetId, functionArgs);
                 break;
               case 'get_data_sample':
-                toolResult = await executeGetDataSample(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetDataSample(db, datasetId, functionArgs);
                 break;
               case 'get_missing_values':
-                toolResult = await executeGetMissingValues(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetMissingValues(db, datasetId, functionArgs);
                 break;
               case 'suggest_data_cleaning':
-                toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeSuggestDataCleaning(db, datasetId, functionArgs);
                 break;
               case 'generate_mongodb_query':
-                toolResult = await executeGenerateMongoDBQuery(c.env.DB, datasetId, functionArgs, apiKey, model);
+                toolResult = await executeGenerateMongoDBQuery(db, datasetId, functionArgs, apiKey, model);
                 break;
               default:
                 toolResult = { error: `Unknown function: ${functionName}` };
@@ -720,7 +731,8 @@ chat.post('/:datasetId', async (c) => {
     }
 
     // Fetch dataset context
-    const dataset = await c.env.DB.prepare(`
+    const db = resolveDatabase(c.env);
+    const dataset = await db.prepare(`
       SELECT * FROM datasets WHERE id = ?
     `).bind(datasetId).first();
 
@@ -730,33 +742,23 @@ chat.post('/:datasetId', async (c) => {
 
     // Build lightweight system prompt (since we have tools now)
     const columns = JSON.parse(dataset.columns as string);
-    const systemPrompt = `You are a data analysis assistant helping users understand their dataset.
+    const systemPrompt = `You are a friendly insight assistant for business users with limited data-science background.
 
-Dataset: ${dataset.name}
+Dataset name: ${dataset.name}
 Rows: ${dataset.row_count}
 Columns: ${dataset.column_count}
 
-Available columns: ${columns.slice(0, 50).map((c: any) => c.name).join(', ')}${columns.length > 50 ? `, ... and ${columns.length - 50} more` : ''}
+Available tools let you fetch precise facts (statistics, correlations, samples, data quality issues, cleaning tips, MongoDB queries). Use them when you need evidence, then translate the meaning into plain language.
 
-You have access to tools to query specific analyses:
-- get_outlier_columns: Find columns with outliers
-- get_correlation_analysis: Find correlations between columns
-- get_column_statistics: Get detailed stats for a specific column
-- search_analyses: Search all analyses by type or keyword
-- get_data_sample: Get sample rows from the dataset
-- get_missing_values: Find columns with missing data
-- suggest_data_cleaning: Get data cleaning suggestions
-- generate_mongodb_query: Generate MongoDB queries/pipelines from natural language
+Guidelines:
+- Lead with the story, not the stats. Start every answer with 2–3 bullet points titled "What this means" that explain the impact or pattern in everyday words.
+- Mention numbers only when they change the decision (round them sensibly, e.g. “about 84% missing”).
+- Highlight data quality risks, but immediately suggest what the user could do about them (cleaning option, extra column to create, question to ask the data owner).
+- Finish with a short "Suggested next steps" list (max 3 bullets) that keeps the user moving forward.
+- Never dump raw tables or long lists of metrics. The user wants actionable intelligence, not diagnostics.
+- If the user asks for a query or deeper dive, call the appropriate tool and summarise the result in the same approachable tone.
 
-Your role:
-- Use tools to get specific data when asked
-- Provide concrete answers with actual numbers from the tools
-- Be concise but thorough (max 3-4 paragraphs)
-- Use bullet points for lists
-- Always cite specific results from tool calls
-- When user asks about MongoDB queries, use generate_mongodb_query tool
-
-When users ask questions, use the appropriate tools to get actual data.`;
+Keep answers concise (under 4 short paragraphs total) and make sure every piece of evidence is tied to why it matters.`;
 
     // Build messages array
     const messages = [
@@ -837,28 +839,28 @@ When users ask questions, use the appropriate tools to get actual data.`;
           try {
             switch (functionName) {
               case 'get_outlier_columns':
-                toolResult = await executeGetOutlierColumns(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetOutlierColumns(db, datasetId, functionArgs);
                 break;
               case 'get_correlation_analysis':
-                toolResult = await executeGetCorrelationAnalysis(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetCorrelationAnalysis(db, datasetId, functionArgs);
                 break;
               case 'get_column_statistics':
-                toolResult = await executeGetColumnStatistics(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetColumnStatistics(db, datasetId, functionArgs);
                 break;
               case 'search_analyses':
-                toolResult = await executeSearchAnalyses(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeSearchAnalyses(db, datasetId, functionArgs);
                 break;
               case 'get_data_sample':
-                toolResult = await executeGetDataSample(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetDataSample(db, datasetId, functionArgs);
                 break;
               case 'get_missing_values':
-                toolResult = await executeGetMissingValues(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeGetMissingValues(db, datasetId, functionArgs);
                 break;
               case 'suggest_data_cleaning':
-                toolResult = await executeSuggestDataCleaning(c.env.DB, datasetId, functionArgs);
+                toolResult = await executeSuggestDataCleaning(db, datasetId, functionArgs);
                 break;
               case 'generate_mongodb_query':
-                toolResult = await executeGenerateMongoDBQuery(c.env.DB, datasetId, functionArgs, apiKey, model);
+                toolResult = await executeGenerateMongoDBQuery(db, datasetId, functionArgs, apiKey, model);
                 break;
               default:
                 toolResult = { error: `Unknown function: ${functionName}` };

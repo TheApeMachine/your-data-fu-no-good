@@ -28,6 +28,27 @@ const uploadProgress = document.getElementById('upload-progress');
 const uploadSection = document.getElementById('upload-section');
 const resultsSection = document.getElementById('results-section');
 const datasetsSection = document.getElementById('datasets-section');
+const insightsContainer = document.getElementById('insights-container');
+window.pendingCleanerColumn = window.pendingCleanerColumn ?? null;
+
+if (insightsContainer) {
+    insightsContainer.addEventListener('click', (event) => {
+        const button = event.target.closest('.insight-action-button');
+        if (!button) return;
+        const encoded = button.dataset.action;
+        if (!encoded) return;
+        try {
+            const action = JSON.parse(decodeURIComponent(encoded));
+            const analysisId = Number(button.dataset.analysisId);
+            const analysisObj = allAnalyses.find(a => a.id === analysisId);
+            if (analysisObj) {
+                handleInsightAction(analysisObj, action);
+            }
+        } catch (error) {
+            console.error('Failed to execute insight action:', error);
+        }
+    });
+}
 
 // Navigation
 document.getElementById('view-datasets').addEventListener('click', loadDatasets);
@@ -154,14 +175,19 @@ async function loadDatasetResults(datasetId) {
         displayInsights(analyses);
         displaySampleData(sample, dataset.columns);
 
+        if (typeof loadTopics === 'function') {
+            loadTopics(datasetId);
+        }
+
         showSection('results');
     } catch (error) {
         console.error('Error loading results:', error);
+        const errorMessage = error.response?.data?.error || error.message || 'Failed to load results';
         // If analysis is still running, retry
         if (error.response?.data?.analyses?.length === 0) {
             setTimeout(() => loadDatasetResults(datasetId), 3000);
         } else {
-            alert('Failed to load results');
+            updateStatus('Failed to load results', errorMessage, 0);
             resetUpload();
         }
     }
@@ -344,6 +370,53 @@ function drillDownChart(title, explanation, columnName, chartType) {
 // Display dataset information
 function displayDatasetInfo(dataset) {
     const info = document.getElementById('dataset-info');
+    const columns = Array.isArray(dataset.columns) ? dataset.columns : [];
+    const totalRows = Number(dataset.row_count ?? 0);
+    const highlightCount = Math.min(columns.length, 6);
+    const scoredColumns = columns.map(col => {
+        const profile = col.profile || {};
+        const semantic = col.semantic_type || profile.semantic_type;
+        const uniqueCount = col.unique_count ?? profile.unique_count ?? 0;
+        const uniqueRatio = profile.unique_ratio ?? (totalRows > 0 ? uniqueCount / totalRows : 0);
+        let score = 0;
+        if (semantic) score += 3;
+        if (profile.is_categorical) score += 2;
+        if (semantic === 'status' || semantic === 'category') score += 2;
+        if (semantic === 'currency' || semantic === 'percentage') score += 2;
+        if (uniqueCount > 1 && uniqueCount <= 25) score += 1;
+        if (profile.notes && profile.notes.length > 0) score += 1;
+        if (profile.is_identifier || semantic === 'identifier') score -= 3;
+        if (uniqueRatio >= 0.8) score -= 1;
+        return { col, profile, semantic, uniqueCount, score };
+    }).sort((a, b) => b.score - a.score);
+
+    const highlightColumns = scoredColumns.slice(0, highlightCount).map(({ col, profile, semantic, uniqueCount }) => {
+        const semanticLabel = semantic ? formatSemanticLabel(semantic) : '';
+        const badges = [];
+        if (semanticLabel) {
+            badges.push(`<span class="text-xs px-2 py-1 rounded-full" style="background: rgba(59, 130, 246, 0.12); color: #2563eb;">${semanticLabel}</span>`);
+        }
+        if (profile?.is_categorical) {
+            badges.push('<span class="text-xs px-2 py-1 rounded-full" style="background: rgba(16, 185, 129, 0.12); color: #0f766e;">categorical</span>');
+        }
+        if (profile?.is_identifier || semantic === 'identifier') {
+            badges.push('<span class="text-xs px-2 py-1 rounded-full" style="background: rgba(148, 163, 184, 0.2); color: #475569;">identifier</span>');
+        }
+        const badgeRow = badges.length ? `<div class="flex flex-wrap gap-2">${badges.join('')}</div>` : '';
+        const typeLabel = formatColumnType(col.type);
+        const reason = profile?.notes && profile.notes.length ? profile.notes[0] : '';
+        return `
+            <div class="flex flex-col gap-1">
+                <span class="font-semibold" style="color: var(--text-primary);">${col.name}</span>
+                ${badgeRow}
+                <div class="text-xs" style="color: var(--text-secondary);">
+                    ${typeLabel} • Unique: ${formatNumber(uniqueCount)}
+                    ${reason ? `• ${reason}` : ''}
+                </div>
+            </div>
+        `;
+    }).join('<div class="h-px bg-gray-200 my-2 opacity-50"></div>');
+
     info.innerHTML = `
         <div class="neu-card p-4">
             <div class="text-sm font-semibold" style="color: var(--accent);">Dataset Name</div>
@@ -363,6 +436,12 @@ function displayDatasetInfo(dataset) {
                 <i class="fas fa-check-circle" style="color: #10b981;"></i> Analyzed
             </div>
         </div>
+        ${highlightColumns
+            ? `<div class="neu-card p-4 col-span-1 md:col-span-2">
+                    <div class="text-sm font-semibold mb-3" style="color: var(--accent);">Column Highlights</div>
+                    <div class="flex flex-col gap-3">${highlightColumns}</div>
+               </div>`
+            : ''}
     `;
 }
 
@@ -438,6 +517,7 @@ function displayInsights(analyses) {
                 </div>
             </div>
             <p class="leading-relaxed" style="color: var(--text-primary);">${analysis.explanation}</p>
+            ${renderAnalysisDetails(analysis)}
         </div>
     `).join('');
 }
@@ -554,8 +634,12 @@ function getAnalysisIcon(type) {
         statistics: '<i class="fas fa-chart-bar" style="color: #3b82f6;"></i>',
         correlation: '<i class="fas fa-project-diagram" style="color: #a855f7;"></i>',
         outlier: '<i class="fas fa-exclamation-triangle" style="color: #f59e0b;"></i>',
+        anomaly: '<i class="fas fa-bullseye" style="color: #ef4444;"></i>',
         pattern: '<i class="fas fa-puzzle-piece" style="color: #10b981;"></i>',
         trend: '<i class="fas fa-chart-line" style="color: #ef4444;"></i>',
+        timeseries: '<i class="fas fa-wave-square" style="color: #8b5cf6;"></i>',
+        missing: '<i class="fas fa-question-circle" style="color: #f97316;"></i>',
+        feature: '<i class="fas fa-magic" style="color: #22d3ee;"></i>',
         clustering: '<i class="fas fa-layer-group" style="color: #6366f1;"></i>'
     };
     return icons[type] || '<i class="fas fa-info-circle" style="color: var(--text-secondary);"></i>';
@@ -566,11 +650,409 @@ function formatAnalysisType(type) {
         statistics: 'Statistical Summary',
         correlation: 'Relationship Found',
         outlier: 'Unusual Values Detected',
+        anomaly: 'Anomaly Spotlight',
         pattern: 'Pattern Discovery',
         trend: 'Trend Analysis',
+        timeseries: 'Time-Series Insight',
+        missing: 'Missing Data Alert',
+        feature: 'Feature Engineering Suggestion',
         clustering: 'Group Detection'
     };
     return names[type] || type;
+}
+
+function renderAnalysisDetails(analysis) {
+    if (!analysis?.analysis_type) return '';
+    let details = '';
+
+    if (analysis.analysis_type === 'feature' && analysis.result) {
+        const transformationName = analysis.result.transformation ? formatTransformationName(analysis.result.transformation) : '';
+        const transformation = transformationName ? `<li><strong>Suggested helper:</strong> ${transformationName}</li>` : '';
+        const benefit = analysis.result.expected_benefit ? `<li><strong>Why it helps:</strong> ${analysis.result.expected_benefit}</li>` : '';
+        const columns = Array.isArray(analysis.result.columns)
+            ? `<li><strong>Based on columns:</strong> ${analysis.result.columns.join(', ')}</li>`
+            : '';
+        details += `
+            <ul class="mt-3 text-sm leading-relaxed" style="color: var(--text-secondary); list-style-type: disc; padding-left: 1.25rem;">
+                ${columns}
+                ${transformation}
+                ${benefit}
+            </ul>
+        `;
+    } else if (analysis.analysis_type === 'anomaly' && Array.isArray(analysis.result?.anomalies)) {
+        const items = analysis.result.anomalies.slice(0, 3).map((a) => {
+            const directionLabel = a.direction === 'high' ? 'High spike' : 'Low dip';
+            return `<li>${directionLabel} at row ${a.row} (~${formatNumber(a.value)}), score ${a.score}</li>`;
+        }).join('');
+        details += `
+            <ul class="mt-3 text-sm leading-relaxed" style="color: var(--text-secondary); list-style-type: disc; padding-left: 1.25rem;">
+                ${items}
+            </ul>
+        `;
+    }
+
+    const actionsMarkup = renderInsightActions(analysis);
+    if (actionsMarkup) {
+        details += actionsMarkup;
+    }
+
+    return details;
+}
+
+function formatSemanticLabel(label) {
+    if (!label) return '';
+    const friendlyMap = {
+        postal_code: 'postal code',
+        binary_metric: 'binary metric',
+        timestamp: 'timestamp',
+        identifier: 'identifier',
+    };
+    const value = friendlyMap[label] || label.replace(/_/g, ' ');
+    return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatColumnType(type) {
+    if (!type) return 'STRING';
+    const map = {
+        string: 'STRING',
+        number: 'NUMBER',
+        boolean: 'BOOLEAN',
+        date: 'DATE',
+        datetime: 'DATETIME'
+    };
+    return map[type] || type.toUpperCase();
+}
+
+function formatNumber(value) {
+    if (value === undefined || value === null) return 'n/a';
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value.toLocaleString();
+    }
+    return String(value);
+}
+
+function formatTransformationName(transform) {
+    const map = {
+        log1p: 'log-scaled helper column (log1p)',
+        standardize: 'normalised (z-score) helper column',
+        one_hot_encoding: 'yes/no columns for each value',
+        datetime_components: 'calendar breakdown (day / month / quarter)',
+        extract_domain: 'email domain helper',
+        extract_host: 'website host helper',
+        missing_indicator: 'missing-data flag',
+        identifier_encoding: 'ID length / hashed helper'
+    };
+    return map[transform] || transform.replace(/_/g, ' ');
+}
+
+function buildFeatureAction(transformation, columns) {
+    if (!transformation) return null;
+    const columnLabel = Array.isArray(columns) && columns.length
+        ? (columns.length === 1 ? columns[0] : columns.join(', '))
+        : 'selected column';
+    let label;
+    switch (transformation) {
+        case 'log1p':
+            label = `Create log helper for ${columnLabel}`;
+            break;
+        case 'standardize':
+            label = `Create z-score for ${columnLabel}`;
+            break;
+        case 'one_hot_encoding':
+            label = `Create yes/no columns for ${columnLabel}`;
+            break;
+        case 'datetime_components':
+            label = `Add calendar helpers for ${columnLabel}`;
+            break;
+        case 'extract_domain':
+            label = `Extract domain from ${columnLabel}`;
+            break;
+        case 'extract_host':
+            label = `Extract host from ${columnLabel}`;
+            break;
+        case 'missing_indicator':
+            label = `Create ${columnLabel} missing flag`;
+            break;
+        case 'identifier_encoding':
+            label = `Summarise ID ${columnLabel}`;
+            break;
+        default:
+            label = `Apply ${formatTransformationName(transformation)}`;
+    }
+
+    return {
+        id: 'apply_feature',
+        label,
+        payload: {
+            transformation,
+            columns: Array.isArray(columns) ? columns : [],
+        },
+    };
+}
+
+function renderInsightActions(analysis) {
+    let actions = Array.isArray(analysis?.result?.insight_actions) ? analysis.result.insight_actions : [];
+    if ((!actions || !actions.length) && analysis.analysis_type === 'feature') {
+        const transformation = analysis.result?.transformation;
+        const columns = Array.isArray(analysis.result?.columns) ? analysis.result.columns : [];
+        const fallback = buildFeatureAction(transformation, columns);
+        if (fallback) {
+            actions = [fallback];
+        }
+    }
+    if (!actions || !actions.length) return '';
+    const buttons = actions.map((action) => {
+        const payload = encodeURIComponent(JSON.stringify(action));
+        return `
+            <button type="button"
+                    class="neu-button insight-action-button"
+                    data-analysis-id="${analysis.id}"
+                    data-action="${payload}">
+                <i class="fas fa-bolt mr-2"></i>${action.label}
+            </button>
+        `;
+    }).join('');
+    return `<div class="mt-3 flex flex-wrap gap-2">${buttons}</div>`;
+}
+
+let activeInsightModal = null;
+
+async function handleInsightAction(analysis, action) {
+    if (!analysis || !action || !action.id) return;
+    const payload = action.payload || {};
+
+    switch (action.id) {
+        case 'open_cleaner': {
+            const column = payload.column || analysis.column_name || null;
+            const datasetId = analysis.dataset_id || currentDatasetId;
+            window.pendingCleanerColumn = column;
+            if (datasetId && typeof openCleaningModal === 'function') {
+                openCleaningModal(datasetId);
+            } else {
+                updateStatus('Cleaning assistant unavailable', 'Unable to open cleaning tools right now.', 0);
+            }
+            break;
+        }
+        case 'view_segment': {
+            await previewInsightSegment(analysis, payload);
+            break;
+        }
+        case 'apply_feature': {
+            await applyFeatureSuggestion(analysis, payload);
+            break;
+        }
+        default:
+            console.warn('Unknown insight action requested:', action);
+    }
+}
+
+async function previewInsightSegment(analysis, payload = {}) {
+    const datasetId = analysis.dataset_id || currentDatasetId;
+    if (!datasetId) {
+        updateStatus('Segment preview unavailable', 'Dataset identifier missing for this insight.', 0);
+        return;
+    }
+
+    const column = payload.column || analysis.column_name;
+    if (!column) {
+        updateStatus('Segment preview unavailable', 'Column not specified for this insight.', 0);
+        return;
+    }
+
+    const params = new URLSearchParams();
+    params.set('column', column);
+    if (payload.direction) params.set('direction', payload.direction);
+    if (payload.percentile !== undefined) params.set('percentile', payload.percentile);
+    if (payload.limit !== undefined) params.set('limit', payload.limit);
+    if (payload.equals !== undefined) params.set('value', payload.equals);
+    if (Array.isArray(payload.rows) && payload.rows.length > 0) {
+        params.set('rows', payload.rows.join(','));
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${datasetId}/segments?${params.toString()}`);
+        const segment = response.data;
+        if (!segment || !Array.isArray(segment.rows) || segment.rows.length === 0) {
+            updateStatus('No rows found for this insight', '', 0);
+            return;
+        }
+
+    const title =
+        payload.title ||
+        (payload.equals !== undefined
+            ? `Rows where ${column} = ${payload.equals}`
+            : payload.direction === 'bottom'
+                ? `Lowest ${payload.percentile || 10}% of ${column}`
+                : `Top ${payload.percentile || 10}% of ${column}`);
+
+        showInsightSegmentModal({
+            title,
+            column,
+            direction: segment.direction,
+            percentile: segment.percentile,
+            totalRows: segment.total_rows,
+            rows: segment.rows,
+            payload,
+        });
+    } catch (error) {
+        console.error('Failed to load segment preview:', error);
+        const message = error.response?.data?.error || error.message || 'Failed to load segment';
+        updateStatus('Segment preview failed', message, 0);
+    }
+}
+
+function showInsightSegmentModal({ title, column, direction, percentile, totalRows, rows, payload = {} }) {
+    if (activeInsightModal) {
+        activeInsightModal.remove();
+        activeInsightModal = null;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'insight-modal-overlay';
+    overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 2rem; z-index: 2000;';
+
+    const summaryParts = [
+        `Showing ${rows.length.toLocaleString()} of ${totalRows.toLocaleString()} rows`,
+    ];
+    if (payload.equals !== undefined) {
+        summaryParts.push(`Filter: ${column} = ${payload.equals}`);
+    } else {
+        if (direction) {
+            summaryParts.push(direction === 'bottom' ? 'Lowest values' : 'Highest values');
+        }
+        if (percentile) {
+            summaryParts.push(`Percentile: ${percentile}%`);
+        }
+    }
+
+    const summary = summaryParts.join(' · ');
+
+    const firstRowData = rows.length > 0 && rows[0].data && typeof rows[0].data === 'object'
+        ? rows[0].data
+        : {};
+    const baseColumns = Object.keys(firstRowData);
+    if (!baseColumns.includes(column)) {
+        baseColumns.unshift(column);
+    }
+    const limitedColumns = [...new Set(baseColumns)].slice(0, 8);
+
+    const headerCells = limitedColumns
+        .map((key) => `<th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">${escapeHtml(key)}</th>`)
+        .join('');
+
+    const bodyRows = rows
+        .map((row) => {
+            const cells = limitedColumns
+                .map((key) => {
+                    const cellValue = key === column ? row.value ?? row.data?.[key] : row.data?.[key];
+                    const highlighted = key === column ? 'font-semibold' : '';
+                    return `<td class="px-4 py-2 text-sm ${highlighted}" style="color: var(--text-primary);">${formatCellValue(cellValue)}</td>`;
+                })
+                .join('');
+            return `<tr class="border-b border-gray-200/40"><td class="px-4 py-2 text-sm" style="color: var(--text-secondary);">#${(row.row_number + 1).toLocaleString()}</td>${cells}</tr>`;
+        })
+        .join('');
+
+    const tableMarkup = rows.length
+        ? `
+            <div class="mt-4 overflow-auto" style="max-height: 55vh;">
+                <table class="min-w-full border-collapse">
+                    <thead>
+                        <tr>
+                            <th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Row</th>
+                            ${headerCells}
+                        </tr>
+                    </thead>
+                    <tbody>${bodyRows}</tbody>
+                </table>
+            </div>
+        `
+        : `<p class="mt-4 text-sm" style="color: var(--text-secondary);">No rows available for this insight.</p>`;
+
+    overlay.innerHTML = `
+        <div class="neu-card" style="position: relative; max-width: 900px; width: 100%; max-height: 80vh; overflow: hidden; padding: 1.75rem;">
+            <button type="button" class="insight-modal-close neu-button" style="position: absolute; top: 1rem; right: 1rem;">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3 class="text-lg font-semibold mb-2" style="color: var(--text-primary);">${escapeHtml(title || `Rows for ${column}`)}</h3>
+            <p class="text-sm" style="color: var(--text-secondary);">${escapeHtml(summary)}</p>
+            ${tableMarkup}
+        </div>
+    `;
+
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay || event.target.closest('.insight-modal-close')) {
+            overlay.remove();
+            activeInsightModal = null;
+        }
+    });
+
+    document.body.appendChild(overlay);
+    activeInsightModal = overlay;
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatCellValue(value) {
+    if (value === null || value === undefined) {
+        return '<span style="color: var(--text-secondary);">null</span>';
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value.toLocaleString();
+    }
+    if (typeof value === 'boolean') {
+        return value ? 'true' : 'false';
+    }
+    if (typeof value === 'object') {
+        try {
+            return `<code style="font-size: 0.85em;">${escapeHtml(JSON.stringify(value))}</code>`;
+        } catch {
+            return '<code>[object]</code>';
+        }
+    }
+    return escapeHtml(value);
+}
+
+async function applyFeatureSuggestion(analysis, payload = {}) {
+    const datasetId = analysis.dataset_id || currentDatasetId;
+    if (!datasetId) {
+        updateStatus('Feature generation unavailable', 'Dataset identifier missing for this insight.', 0);
+        return;
+    }
+
+    const transformation = payload.transformation || analysis.result?.transformation;
+    const columns = Array.isArray(payload.columns) && payload.columns.length
+        ? payload.columns
+        : Array.isArray(analysis.result?.columns) ? analysis.result.columns : [];
+
+    if (!transformation || columns.length === 0) {
+        updateStatus('Feature generation unavailable', 'Transformation details missing for this insight.', 0);
+        return;
+    }
+
+    updateStatus('Applying feature...', `Generating ${transformation.replace(/_/g, ' ')} helper`, 85);
+
+    try {
+        const response = await axios.post(`/api/features/${datasetId}/apply`, {
+            transformation,
+            columns,
+        });
+
+        const data = response.data || {};
+        updateStatus('Feature created', data.message || 'New helper column added to the dataset', 90);
+        await loadDatasetResults(datasetId);
+    } catch (error) {
+        console.error('Feature generation failed:', error);
+        const message = error.response?.data?.error || error.message || 'Unable to generate feature';
+        updateStatus('Feature generation failed', message, 0);
+    }
 }
 
 function getImportanceBg(importance) {

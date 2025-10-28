@@ -44,8 +44,8 @@ export function detectColumnMappings(
 
       if (nameCol) {
         // Check if they have similar cardinality (both mostly unique or both low)
-        const idUniqueness = col.unique_count / rowCount;
-        const nameUniqueness = nameCol.unique_count / rowCount;
+        const idUniqueness = (col.unique_count ?? 0) / Math.max(rowCount, 1);
+        const nameUniqueness = (nameCol.unique_count ?? 0) / Math.max(rowCount, 1);
         
         // High confidence if both are similarly unique
         let confidence = 0.5;

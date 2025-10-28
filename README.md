@@ -2,7 +2,7 @@
 
 > **"Just Works" Data Science for Non-Experts**
 
-A next-generation automated data analysis platform that transforms raw CSV/JSON uploads into actionable insights with full explainability. Built with Hono, Cloudflare Workers, and modern edge technologies.
+A next-generation automated data analysis platform that transforms raw CSV/JSON uploads into actionable insights with full explainability. Built with Hono on a lightweight Node.js runtime and powered by embedded DuckDB for blazing-fast analytics without external infrastructure.
 
 ## 🌐 Live Demo
 
@@ -140,19 +140,19 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 
 ## 📊 Data Architecture
 
-### Database Schema (Cloudflare D1 - SQLite)
+### Storage & Database (DuckDB Embedded)
 
 **Tables:**
 1. `datasets` - Metadata (name, row_count, column_count, analysis_status)
-2. `data_rows` - Actual data in JSON format
-3. `analyses` - Insights with type, confidence, explanation, importance, quality_score
-4. `visualizations` - Chart.js configurations
+2. `data_rows` - Raw rows stored as JSON (staged for analysis)
+3. `analyses` - Insight payloads with type, confidence, explanation, importance, quality_score
+4. `visualizations` - Chart.js configurations generated from insights
 5. `cleaning_operations` - Logs of automated cleaning actions
 6. `column_mappings` - ID→Name relationships (auto_detected flag)
 
 **Indexes:**
-- `quality_score DESC` for fast sorting
-- Foreign keys on `dataset_id` for all tables
+- `quality_score DESC` for surfacing high-value insights first
+- Foreign keys on `dataset_id` for cross-table consistency
 - UNIQUE constraint on `(dataset_id, id_column)` for mappings
 
 ---
@@ -163,7 +163,7 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 ```
 1. User drops CSV/JSON file
 2. PapaParse parses + auto-types columns
-3. Data inserted into D1 database
+3. Data streamed into DuckDB (in-memory or single-file)
 4. Column mappings detected and stored
 5. Returns dataset_id immediately
 ```
@@ -195,10 +195,10 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 ## 🛠️ Technology Stack
 
 ### Backend
-- **Hono** - Lightweight web framework for Cloudflare Workers
-- **Cloudflare Workers** - Edge runtime deployment
-- **Cloudflare D1** - SQLite-based distributed database
-- **Wrangler** - CLI for development and deployment
+- **Hono** - Lightweight web framework
+- **Node.js** - Primary runtime (Docker/Kubernetes friendly)
+- **DuckDB** - Embedded OLAP database (in-process)
+- **MongoDB Driver** - Optional Atlas ingestion
 
 ### Frontend
 - **Tailwind CSS** - Utility-first styling (via CDN)
@@ -209,9 +209,9 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 - **FontAwesome** - Icon library
 
 ### Infrastructure
-- **PM2** - Process manager for development
-- **Vite** - Build tool
-- **TypeScript** - Type safety
+- **TypeScript** - End-to-end type safety
+- **tsx** - Zero-config TypeScript runner for development
+- **Docker** - Recommended container packaging (optional)
 
 ---
 
@@ -220,7 +220,9 @@ A next-generation automated data analysis platform that transforms raw CSV/JSON 
 ```
 webapp/
 ├── src/
-│   ├── index.tsx              # Main app + HTML
+│   ├── app.ts                 # Hono app factory
+│   ├── index.tsx              # Cloudflare worker wrapper (optional)
+│   ├── server.ts              # Node.js entrypoint
 │   ├── types.ts               # TypeScript interfaces
 │   ├── routes/
 │   │   ├── upload.ts          # File upload + initial processing
@@ -235,6 +237,7 @@ webapp/
 │       ├── visualizer.ts      # Chart.js config generation
 │       ├── papa-parser.ts     # CSV parsing wrapper
 │       └── column-mapper.ts   # ID→Name auto-detection
+├── src/storage/               # DuckDB bindings and adapters
 ├── public/static/
 │   ├── app.js                 # Frontend logic
 │   └── graph.js               # Cytoscape.js graph
@@ -242,8 +245,6 @@ webapp/
 │   ├── 0001_initial_schema.sql
 │   ├── 0002_add_quality_score.sql
 │   └── 0003_add_column_mappings.sql
-├── ecosystem.config.cjs       # PM2 configuration
-├── wrangler.jsonc             # Cloudflare config
 ├── package.json               # Dependencies + scripts
 └── README.md                  # This file
 ```
@@ -258,54 +259,29 @@ webapp/
 
 ### Setup
 ```bash
-cd /home/user/webapp
-
 # Install dependencies
 npm install
 
-# Initialize git
-git init
-git add .
-git commit -m "Initial commit"
+# (Optional) set environment variables
+export OPENAI_API_KEY=sk-your-api-key
+export OPENAI_MODEL=gpt-4o-mini
 
-# Run migrations (local D1)
-npx wrangler d1 migrations apply webapp-production --local
+# Run the development server with auto-reload
+npm run dev
 
-# Configure OpenAI API Key (for LLM Chat feature)
-# Create .dev.vars file with your API key:
-echo "OPENAI_API_KEY=sk-your-api-key-here" > .dev.vars
-echo "OPENAI_MODEL=gpt-4o-mini" >> .dev.vars
-
-# Get your API key from: https://platform.openai.com/api-keys
-```
-
-**Important:** The `.dev.vars` file is in `.gitignore` and will NOT be committed.
-
-### Development Server
-```bash
-# Build first
+# Or run in production mode
 npm run build
-
-# Start with PM2 (recommended for sandbox)
-pm2 start ecosystem.config.cjs
-
-# Check logs
-pm2 logs webapp --nostream
-
-# Stop service
-pm2 delete webapp
+npm run start
 ```
+
+Environment variables can also be provided via `.env` files, Docker secrets, or your process manager.
 
 ### Key Scripts
 ```bash
-npm run build                 # Vite build
-npm run dev                   # Local Vite dev server
-npm run dev:sandbox           # Wrangler dev server (D1 local)
-npm run deploy                # Deploy to Cloudflare Pages
-npm run db:migrate:local      # Apply migrations locally
-npm run db:migrate:prod       # Apply migrations to production
-npm run db:reset              # Reset local DB + reseed
-npm run clean-port            # Kill port 3000 processes
+npm run dev      # tsx watch src/server.ts
+npm run start    # tsx src/server.ts (production)
+npm run build    # Type-check using tsc
+npm run clean    # Remove build artifacts
 ```
 
 ---
@@ -489,8 +465,8 @@ MIT License - Feel free to use, modify, and distribute.
 - **PapaParse** - For rock-solid CSV parsing
 - **Cytoscape.js** - For beautiful network visualizations
 - **Chart.js** - For flexible charting
-- **Cloudflare** - For edge computing infrastructure
-- **Hono** - For blazing-fast edge framework
+- **DuckDB** - For an incredible in-process analytics engine
+- **Hono** - For a tiny, fast web framework
 
 ---
 

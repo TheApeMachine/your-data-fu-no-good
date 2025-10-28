@@ -204,7 +204,7 @@ function addMessageToChat(role, content, isTyping = false) {
         messageDiv.innerHTML = `
             <div class="flex justify-end mb-3">
                 <div class="neu-card px-4 py-2 max-w-[80%]" style="background: var(--accent); color: white;">
-                    ${content}
+                    ${formatPlainText(content)}
                 </div>
             </div>
         `;
@@ -303,10 +303,10 @@ function addSuggestionsToChat(suggestions) {
     suggestionsDiv.innerHTML = `
         <div class="flex flex-wrap gap-2 pl-11">
             ${suggestions.map(s => `
-                <button onclick="askSuggestion('${s.replace(/'/g, "\\'")}')" 
+                <button onclick="askSuggestion(decodeURIComponent('${encodeURIComponent(s)}'))" 
                         class="neu-button text-sm px-3 py-1" 
                         style="color: var(--accent);">
-                    ${s}
+                    ${escapeHtml(s)}
                 </button>
             `).join('')}
         </div>
@@ -321,8 +321,29 @@ function askSuggestion(question) {
 }
 
 function formatMessage(text) {
-    // Convert newlines to <br>
-    return text.replace(/\n/g, '<br>');
+    if (!text) return '';
+    if (window.marked && window.DOMPurify) {
+        const html = window.marked.parse(text, { breaks: true });
+        return window.DOMPurify.sanitize(html);
+    }
+    return formatPlainText(text);
+}
+
+function formatPlainText(text) {
+    return escapeHtml(text || '').replace(/\n/g, '<br>');
+}
+
+function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, (char) => {
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;'
+        };
+        return map[char] || char;
+    });
 }
 
 function clearChat() {

@@ -5,15 +5,27 @@ import { parseCSV, inferColumnTypes } from '../utils/papa-parser';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
 import { detectColumnMappings } from '../utils/column-mapper';
-import type { Bindings } from '../types';
+import type { Bindings, ColumnDefinition } from '../types';
+import { resolveDatabase } from '../storage';
 
 const upload = new Hono<{ Bindings: Bindings }>();
 
 upload.post('/', async (c) => {
   try {
-    const formData = await c.req.formData();
-    const file = formData.get('file') as File;
-    
+    let file: File | null = null;
+
+    try {
+      const formData = await c.req.formData();
+      const candidate = formData.get('file');
+      file = candidate instanceof File ? candidate : null;
+    } catch (error) {
+      const body = await c.req.parseBody();
+      const candidate = body['file'];
+      if (candidate instanceof File) {
+        file = candidate;
+      }
+    }
+
     if (!file) {
       return c.json({ error: 'No file provided' }, 400);
     }
@@ -57,17 +69,30 @@ upload.post('/', async (c) => {
     }
 
     // Infer column types
-    const columnTypes = inferColumnTypes(rows);
-    const columns = Object.keys(rows[0]).map(name => ({
-      name,
-      type: columnTypes[name] || 'string',
-      nullable: rows.some(r => r[name] === null || r[name] === undefined || r[name] === ''),
-      unique_count: new Set(rows.map(r => r[name])).size,
-      sample_values: rows.slice(0, 3).map(r => r[name])
-    }));
+    const columnProfiles = inferColumnTypes(rows);
+    const columns: ColumnDefinition[] = Object.keys(rows[0]).map(name => {
+      const profile = columnProfiles[name];
+      const nullable = profile
+        ? profile.null_count > 0
+        : rows.some(r => r[name] === null || r[name] === undefined || r[name] === '');
+      const uniqueCount = profile?.unique_count ?? new Set(rows.map(r => r[name])).size;
+      const sampleValues = profile?.sample_values ?? rows.slice(0, 3).map(r => r[name]);
+      const columnType = profile?.base_type ?? 'string';
+      return {
+        name,
+        type: columnType,
+        semantic_type: profile?.semantic_type,
+        nullable,
+        unique_count: uniqueCount,
+        sample_values: sampleValues,
+        profile,
+      };
+    });
+
+    const db = resolveDatabase(c.env);
 
     // Create dataset record
-    const datasetResult = await c.env.DB.prepare(`
+    const datasetResult = await db.prepare(`
       INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns, analysis_status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
@@ -82,9 +107,9 @@ upload.post('/', async (c) => {
 
     const datasetId = datasetResult.meta.last_row_id as number;
 
-    // Insert data rows using D1's batch API (much faster!)
+    // Insert data rows in batches to keep DuckDB writes efficient
     const statements = rows.map((row, i) => 
-      c.env.DB.prepare(`
+      db.prepare(`
         INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
         VALUES (?, ?, ?, ?)
       `).bind(datasetId, i, JSON.stringify(row), 0)
@@ -94,7 +119,7 @@ upload.post('/', async (c) => {
     const batchSize = 100;
     for (let i = 0; i < statements.length; i += batchSize) {
       const batch = statements.slice(i, i + batchSize);
-      await c.env.DB.batch(batch);
+      await db.batch(batch);
     }
 
     // Detect and store column mappings (ID -> Name relationships)
@@ -103,7 +128,7 @@ upload.post('/', async (c) => {
     console.log(`Detected ${mappings.length} column mappings`);
     
     for (const mapping of mappings) {
-      await c.env.DB.prepare(`
+      await db.prepare(`
         INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)
         VALUES (?, ?, ?, 1)
       `).bind(
