@@ -5,6 +5,8 @@ let allAnalyses = []; // Store all analyses for filtering
 let allVisualizations = []; // Store all visualizations for filtering
 let bookmarkedInsights = new Set(); // Store bookmarked insight IDs
 let searchDebounceTimer = null; // Debounce timer for search
+let currentSessionId = null;
+let currentSessionSummary = null;
 
 // Load bookmarks from localStorage
 function loadBookmarks() {
@@ -159,6 +161,8 @@ async function loadDatasetResults(datasetId) {
         const datasetResponse = await axios.get(`/api/datasets/${datasetId}`);
         const { dataset, sample } = datasetResponse.data;
 
+        currentDatasetId = dataset?.id ?? datasetId;
+
         // Fetch analyses
         const analysesResponse = await axios.get(`/api/datasets/${datasetId}/analyses`);
         const { analyses } = analysesResponse.data;
@@ -180,6 +184,14 @@ async function loadDatasetResults(datasetId) {
         }
 
         showSection('results');
+
+        if (window.sessionAPI) {
+            try {
+                await ensureSessionForDataset(dataset);
+            } catch (sessionError) {
+                console.error('Failed to ensure session:', sessionError);
+            }
+        }
     } catch (error) {
         console.error('Error loading results:', error);
         const errorMessage = error.response?.data?.error || error.message || 'Failed to load results';
@@ -1111,6 +1123,162 @@ window.sessionAPI = {
     getSessionDatasetRows,
     runSessionQuery,
 };
+
+async function ensureSessionForDataset(dataset) {
+    if (!window.sessionAPI || !dataset || !dataset.id) return;
+
+    try {
+        let summary = null;
+
+        if (!currentSessionId) {
+            summary = await window.sessionAPI.createSession([dataset.id], dataset.name);
+            currentSessionId = summary?.session?.id ?? null;
+            window.currentSessionId = currentSessionId;
+        } else {
+            try {
+                summary = await window.sessionAPI.attachDatasetToSession(currentSessionId, dataset.id, dataset.name);
+            } catch (error) {
+                const status = error?.response?.status;
+                if (status === 409) {
+                    summary = await window.sessionAPI.getSession(currentSessionId);
+                } else if (status === 404) {
+                    summary = await window.sessionAPI.createSession([dataset.id], dataset.name);
+                    currentSessionId = summary?.session?.id ?? null;
+                    window.currentSessionId = currentSessionId;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        if (!summary) return;
+
+        currentSessionId = summary?.session?.id ?? currentSessionId;
+        window.currentSessionId = currentSessionId;
+        currentSessionSummary = summary;
+        window.currentSessionSummary = summary;
+        renderSessionPanel(summary);
+
+        setTimeout(() => {
+            refreshSessionPanel().catch((err) => console.error('Session refresh failed:', err));
+        }, 600);
+    } catch (error) {
+        console.error('Failed to ensure session:', error);
+    }
+}
+
+async function refreshSessionPanel() {
+    if (!window.sessionAPI || !currentSessionId) return;
+    try {
+        const summary = await window.sessionAPI.getSession(currentSessionId);
+        currentSessionId = summary?.session?.id ?? currentSessionId;
+        window.currentSessionId = currentSessionId;
+        currentSessionSummary = summary;
+        window.currentSessionSummary = summary;
+        renderSessionPanel(summary);
+    } catch (error) {
+        console.error('Failed to refresh session panel:', error);
+    }
+}
+
+function renderSessionPanel(summary) {
+    const panel = document.getElementById('session-panel');
+    if (!panel) return;
+
+    const emptyState = document.getElementById('session-panel-empty');
+    const datasetList = document.getElementById('session-datasets-list');
+    const joinContainer = document.getElementById('session-join-container');
+    const joinList = document.getElementById('session-join-suggestions');
+    const joinCount = document.getElementById('session-join-count');
+
+    if (!summary || !summary.session) {
+        panel.classList.add('hidden');
+        return;
+    }
+
+    panel.classList.remove('hidden');
+
+    const datasets = Array.isArray(summary.datasets) ? summary.datasets : [];
+    if (datasets.length === 0) {
+        if (emptyState) emptyState.classList.remove('hidden');
+        if (datasetList) {
+            datasetList.classList.add('hidden');
+            datasetList.innerHTML = '';
+        }
+    } else if (datasetList) {
+        if (emptyState) emptyState.classList.add('hidden');
+        datasetList.classList.remove('hidden');
+        datasetList.innerHTML = datasets.map((entry) => {
+            const info = entry?.dataset || {};
+            const alias = entry.alias && entry.alias.trim().length ? entry.alias : info.name || `Dataset ${entry.dataset_id}`;
+            const rowCount = Number(info.row_count ?? 0).toLocaleString();
+            const columnCount = Number(info.column_count ?? 0).toLocaleString();
+            const isCurrent = entry.dataset_id === currentDatasetId;
+            const highlightClass = isCurrent ? 'outline outline-2 outline-offset-2 outline-[#f59e0b]' : '';
+            const datasetType = info.file_type ? info.file_type.toUpperCase() : 'DATASET';
+            return `
+                <div class="p-3 neu-card-inset rounded-lg ${highlightClass}" style="background: var(--bg-primary);">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <p class="font-semibold" style="color: var(--text-primary);">${escapeHtml(alias)}</p>
+                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs" style="background: rgba(59,130,246,0.12); color: #2563eb;">${escapeHtml(datasetType)}</span>
+                            </div>
+                            <p class="text-xs mt-1" style="color: var(--text-secondary);">${rowCount} rows • ${columnCount} columns</p>
+                        </div>
+                        <button class="neu-button px-3 py-2 text-xs" onclick="loadDatasetResults(${entry.dataset_id})">
+                            <i class="fas fa-table mr-1"></i>Open
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    if (!joinContainer || !joinList || !joinCount) return;
+
+    const suggestions = Array.isArray(summary.join_suggestions) ? summary.join_suggestions : [];
+    if (!suggestions.length) {
+        joinContainer.classList.add('hidden');
+        joinList.innerHTML = '';
+        joinCount.textContent = '';
+        return;
+    }
+
+    const datasetLookup = new Map();
+    datasets.forEach((entry) => {
+        datasetLookup.set(entry.dataset_id, entry);
+    });
+
+    joinContainer.classList.remove('hidden');
+    joinCount.textContent = `${suggestions.length} suggestion${suggestions.length === 1 ? '' : 's'}`;
+    joinList.innerHTML = suggestions.slice(0, 8).map((suggestion) => {
+        const left = datasetLookup.get(suggestion.left_dataset_id);
+        const right = datasetLookup.get(suggestion.right_dataset_id);
+        if (!left || !right) return '';
+        const leftAlias = left.alias && left.alias.trim().length ? left.alias : left.dataset?.name || `Dataset ${left.dataset_id}`;
+        const rightAlias = right.alias && right.alias.trim().length ? right.alias : right.dataset?.name || `Dataset ${right.dataset_id}`;
+        const leftCol = Array.isArray(suggestion.left_columns) ? suggestion.left_columns[0] : suggestion.left_columns;
+        const rightCol = Array.isArray(suggestion.right_columns) ? suggestion.right_columns[0] : suggestion.right_columns;
+        const confidence = Math.round((suggestion.confidence ?? 0) * 100);
+        return `
+            <div class="p-3 neu-card-inset rounded-lg" style="background: var(--bg-primary);">
+                <div class="flex items-center justify-between gap-2">
+                    <div class="text-sm" style="color: var(--text-primary);">
+                        <span class="font-semibold">${escapeHtml(leftAlias)}</span>
+                        <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(leftCol || '')}</span>
+                        <span style="color: var(--text-secondary);"> ↔ </span>
+                        <span class="font-semibold">${escapeHtml(rightAlias)}</span>
+                        <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(rightCol || '')}</span>
+                    </div>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs" style="background: rgba(245, 158, 11, 0.15); color: #b45309;">${confidence}% match</span>
+                </div>
+            </div>
+        `;
+    }).filter(Boolean).join('');
+}
+
+window.refreshSessionPanel = refreshSessionPanel;
 
 function getImportanceBg(importance) {
     const colors = {

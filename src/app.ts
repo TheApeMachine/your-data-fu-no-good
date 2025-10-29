@@ -482,6 +482,31 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                     <i class="fas fa-plus mr-2"></i>New Analysis
                                 </button>
                             </div>
+                            <div id="session-panel" class="neu-card p-6 hidden no-print">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div>
+                                        <h2 class="text-xl font-semibold" style="color: var(--text-primary);">
+                                            <i class="fas fa-layer-group mr-2" style="color: var(--accent);"></i>
+                                            Active Workspace
+                                        </h2>
+                                        <p class="text-xs mt-1" style="color: var(--text-secondary);">Datasets linked in this analysis session.</p>
+                                    </div>
+                                    <button onclick="refreshSessionPanel()" class="neu-button px-3 py-2 text-sm">
+                                        <i class="fas fa-sync-alt mr-2"></i>Refresh
+                                    </button>
+                                </div>
+                                <div id="session-panel-empty" class="text-sm" style="color: var(--text-secondary);">
+                                    Workspace will appear once a dataset is loaded.
+                                </div>
+                                <div id="session-datasets-list" class="space-y-3 hidden"></div>
+                                <div id="session-join-container" class="mt-5 hidden">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <h3 class="text-sm font-semibold uppercase tracking-wide" style="color: var(--text-secondary);">Join Suggestions</h3>
+                                        <span id="session-join-count" class="text-xs" style="color: var(--text-secondary);"></span>
+                                    </div>
+                                    <div id="session-join-suggestions" class="space-y-2 text-sm"></div>
+                                </div>
+                            </div>
                         </aside>
 
                         <section class="flex flex-col gap-6 lg:col-span-2">
