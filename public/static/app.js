@@ -3,6 +3,10 @@
 let currentDatasetId = null;
 let allAnalyses = []; // Store all analyses for filtering
 let allVisualizations = []; // Store all visualizations for filtering
+let currentVizPage = 1; // Pagination for visualizations
+const VIZ_PAGE_SIZE = 24; // Number of charts to render per page
+const visualizationConfigStore = new Map(); // canvasId -> chart config
+let vizObserver = null; // IntersectionObserver for lazy rendering
 let bookmarkedInsights = new Set(); // Store bookmarked insight IDs
 let searchDebounceTimer = null; // Debounce timer for search
 let currentSessionId = null;
@@ -123,10 +127,10 @@ async function handleFile(file) {
 // Trigger analysis for a dataset
 async function triggerAnalysis(datasetId) {
     updateStatus('Analyzing data...', 'Calculating statistics and finding patterns', 50);
-    
+
     try {
         await axios.post(`/api/analyze/${datasetId}`);
-        
+
         updateStatus('Generating visualizations...', 'Creating charts and graphs', 80);
         setTimeout(() => loadDatasetResults(datasetId), 800);
     } catch (error) {
@@ -141,7 +145,7 @@ function updateStatus(message, detail, progress) {
     const statusMessage = document.getElementById('status-message');
     const statusDetail = document.getElementById('status-detail');
     const progressBar = document.getElementById('progress-bar');
-    
+
     if (statusMessage) statusMessage.textContent = message;
     if (statusDetail) statusDetail.textContent = detail;
     if (progressBar) progressBar.style.width = progress + '%';
@@ -211,7 +215,7 @@ function debouncedSearch(searchTerm) {
     if (searchDebounceTimer) {
         clearTimeout(searchDebounceTimer);
     }
-    
+
     // Set new timer (300ms delay)
     searchDebounceTimer = setTimeout(() => {
         filterInsights(searchTerm);
@@ -221,7 +225,7 @@ function debouncedSearch(searchTerm) {
 // Search and filter insights
 function filterInsights(searchTerm) {
     const term = searchTerm.toLowerCase().trim();
-    
+
     if (!term) {
         displayInsights(allAnalyses);
         displayVisualizations(allVisualizations);
@@ -258,10 +262,39 @@ function filterInsights(searchTerm) {
     }
 }
 
-// Display visualizations
+// Lazy create a single Chart.js chart when its canvas enters viewport
+function observeVisualization(canvasId) {
+    if (!vizObserver) {
+        vizObserver = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    const el = entry.target;
+                    const id = el.getAttribute('id');
+                    const cfg = visualizationConfigStore.get(id);
+                    if (cfg && !el.dataset.rendered) {
+                        try {
+                            // mark as rendered to avoid duplicate charts
+                            el.dataset.rendered = '1';
+                            new Chart(el, cfg);
+                        } catch (e) {
+                            console.error('Chart render failed for', id, e);
+                        }
+                    }
+                    vizObserver.unobserve(el);
+                }
+            });
+        }, { rootMargin: '200px 0px' });
+    }
+    const canvas = document.getElementById(canvasId);
+    if (canvas) {
+        vizObserver.observe(canvas);
+    }
+}
+
+// Display visualizations incrementally with pagination and lazy rendering
 function displayVisualizations(visualizations) {
     const container = document.getElementById('visualizations-container');
-    
+
     if (visualizations.length === 0) {
         container.innerHTML = `
             <div class="col-span-2 text-center py-8 text-gray-500">
@@ -272,43 +305,82 @@ function displayVisualizations(visualizations) {
         return;
     }
 
+    // If too many charts, auto-collapse the Visual Insights section to surface Key Insights
+    try {
+        if (visualizations.length > 200) {
+            const details = container.closest('details');
+            if (details) details.removeAttribute('open');
+        }
+    } catch { }
+
+    // Reset state
     container.innerHTML = '';
+    currentVizPage = 1;
+    visualizationConfigStore.clear();
 
-    visualizations.forEach((viz, index) => {
-        const canvasId = `chart-${index}`;
-        const cardDiv = document.createElement('div');
-        cardDiv.className = 'neu-card p-4 relative';
-        cardDiv.innerHTML = `
-            <div class="mb-3 flex justify-between items-start">
-                <div class="flex-1">
-                    <h3 class="font-semibold" style="color: var(--text-primary);">${viz.title}</h3>
-                    <p class="text-sm mt-1" style="color: var(--text-secondary);">${viz.explanation}</p>
-                </div>
-                <div class="flex gap-2">
-                    <button onclick="drillDownChart('${viz.title.replace(/'/g, "\\'").replace(/"/g, "&quot;")}', '${viz.explanation.replace(/'/g, "\\'").replace(/"/g, "&quot;")}', '${viz.column_name || ""}', '${viz.type || ""}')" 
-                            class="neu-button p-2" title="Drill down for deeper analysis" style="color: var(--accent);">
-                        <i class="fas fa-search-plus"></i>
-                    </button>
-                    <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')" 
-                            class="neu-button p-2" title="Download as PNG">
-                        <i class="fas fa-download"></i>
-                    </button>
-                </div>
-            </div>
-            <div style="position: relative; height: 300px;">
-                <canvas id="${canvasId}"></canvas>
-            </div>
-        `;
-        container.appendChild(cardDiv);
+    // Helper to render a page slice
+    function renderNextPage() {
+        const alreadyRendered = container.querySelectorAll('canvas[id^="chart-"]').length;
+        const start = alreadyRendered;
+        const end = Math.min(visualizations.length, currentVizPage * VIZ_PAGE_SIZE);
 
-        // Render chart after DOM update
-        setTimeout(() => {
-            const ctx = document.getElementById(canvasId);
-            if (ctx) {
-                new Chart(ctx, viz.config);
-            }
-        }, 100);
-    });
+        for (let index = start; index < end; index++) {
+            const viz = visualizations[index];
+            const canvasId = `chart-${index}`;
+            const cardDiv = document.createElement('div');
+            cardDiv.className = 'neu-card p-4 relative';
+            cardDiv.innerHTML = `
+                <div class="mb-3 flex justify-between items-start">
+                    <div class="flex-1">
+                        <h3 class="font-semibold" style="color: var(--text-primary);">${viz.title}</h3>
+                        <p class="text-sm mt-1" style="color: var(--text-secondary);">${viz.explanation}</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="drillDownChart('${viz.title.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.explanation.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.column_name || ''}', '${viz.type || ''}')"
+                                class="neu-button p-2" title="Drill down for deeper analysis" style="color: var(--accent);">
+                            <i class="fas fa-search-plus"></i>
+                        </button>
+                        <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')"
+                                class="neu-button p-2" title="Download as PNG">
+                            <i class="fas fa-download"></i>
+                        </button>
+                    </div>
+                </div>
+                <div style="position: relative; height: 300px;">
+                    <canvas id="${canvasId}"></canvas>
+                </div>
+            `;
+            container.appendChild(cardDiv);
+
+            // Store config and observe for lazy rendering
+            visualizationConfigStore.set(canvasId, viz.config);
+            // Defer observer registration to next frame to ensure canvas is in DOM
+            requestAnimationFrame(() => observeVisualization(canvasId));
+        }
+
+        // Render/refresh the Load More control
+        const existingLoadMore = document.getElementById('viz-load-more');
+        if (existingLoadMore) existingLoadMore.remove();
+
+        if (end < visualizations.length) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'col-span-2 flex justify-center items-center';
+            wrapper.innerHTML = `
+                <button id="viz-load-more" class="neu-button px-6 py-3 mt-2">
+                    <i class="fas fa-plus mr-2"></i>Load more (${visualizations.length - end} more)
+                </button>
+            `;
+            container.appendChild(wrapper);
+            const btn = wrapper.querySelector('#viz-load-more');
+            btn.addEventListener('click', () => {
+                currentVizPage += 1;
+                renderNextPage();
+            });
+        }
+    }
+
+    // Initial page
+    renderNextPage();
 }
 
 // Download chart as PNG
@@ -328,52 +400,52 @@ function drillDownChart(title, explanation, columnName, chartType) {
     if (!chatOpen) {
         toggleChat();
     }
-    
+
     // Generate context-aware query based on chart type and content
     let query = '';
-    
+
     // Parse chart type from title or explanation
     const titleLower = title.toLowerCase();
     const explanationLower = explanation.toLowerCase();
-    
+
     if (titleLower.includes('outlier') || explanationLower.includes('outlier')) {
-        query = columnName 
+        query = columnName
             ? `Tell me more about the outliers in ${columnName}. What are the specific values and why are they considered outliers?`
             : `Analyze the outliers shown in this chart: "${title}". What patterns do you see?`;
-            
+
     } else if (titleLower.includes('correlation') || explanationLower.includes('correlation')) {
-        query = columnName 
+        query = columnName
             ? `Explain the correlation involving ${columnName}. What does this relationship mean for the data?`
             : `Analyze this correlation: "${title}". What insights can we derive from this relationship?`;
-            
+
     } else if (titleLower.includes('distribution') || explanationLower.includes('distribution')) {
-        query = columnName 
+        query = columnName
             ? `Analyze the distribution pattern of ${columnName}. What does this tell us about the data?`
             : `What can you tell me about this distribution: "${title}"?`;
-            
+
     } else if (titleLower.includes('trend') || explanationLower.includes('trend')) {
-        query = columnName 
+        query = columnName
             ? `Explain the trend in ${columnName}. Is this trend significant? What might be causing it?`
             : `Analyze this trend: "${title}". What predictions or insights can we make?`;
-            
+
     } else if (titleLower.includes('pattern') || titleLower.includes('frequency')) {
-        query = columnName 
+        query = columnName
             ? `What patterns do you see in ${columnName}? Are there any notable observations?`
             : `Analyze the patterns shown in: "${title}". What do they reveal?`;
-            
+
     } else {
         // Generic drill-down query
-        query = columnName 
+        query = columnName
             ? `Provide a detailed analysis of ${columnName} based on this chart: "${title}"`
             : `Give me deeper insights about: "${title}"`;
     }
-    
+
     // Set the query in the chat input and focus
     const chatInput = document.getElementById('chat-input');
     if (chatInput) {
         chatInput.value = query;
         chatInput.focus();
-        
+
         // Optionally auto-send (uncomment if desired)
         // sendChatMessage();
     }
@@ -465,7 +537,7 @@ function toggleBookmark(analysisId) {
         bookmarkedInsights.add(analysisId);
     }
     saveBookmarks();
-    
+
     // Update UI
     const icon = document.getElementById(`bookmark-icon-${analysisId}`);
     if (icon) {
@@ -478,7 +550,7 @@ function toggleBookmark(analysisId) {
 function showBookmarked() {
     const bookmarked = allAnalyses.filter(a => bookmarkedInsights.has(a.id));
     displayInsights(bookmarked);
-    
+
     const resultCount = document.getElementById('search-result-count');
     if (resultCount) {
         resultCount.textContent = `Showing ${bookmarked.length} bookmarked insights`;
@@ -488,7 +560,7 @@ function showBookmarked() {
 // Display insights
 function displayInsights(analyses) {
     const container = document.getElementById('insights-container');
-    
+
     if (analyses.length === 0) {
         container.innerHTML = `
             <div class="text-center py-8" style="color: var(--text-secondary);">
@@ -519,7 +591,7 @@ function displayInsights(analyses) {
                 </div>
                 <div class="flex items-center gap-3">
                     <button onclick="toggleBookmark(${analysis.id})" class="neu-button p-2" title="Bookmark">
-                        <i id="bookmark-icon-${analysis.id}" class="${bookmarkedInsights.has(analysis.id) ? 'fas' : 'far'} fa-star" 
+                        <i id="bookmark-icon-${analysis.id}" class="${bookmarkedInsights.has(analysis.id) ? 'fas' : 'far'} fa-star"
                            style="color: ${bookmarkedInsights.has(analysis.id) ? '#f59e0b' : ''}"></i>
                     </button>
                     <span class="px-3 py-1 rounded-full text-xs font-semibold" style="background: ${getImportanceBg(analysis.importance)}; color: ${getImportanceText(analysis.importance)};">
@@ -537,14 +609,14 @@ function displayInsights(analyses) {
 // Display sample data
 function displaySampleData(sample, columns) {
     const container = document.getElementById('sample-data');
-    
+
     if (sample.length === 0) {
         container.innerHTML = '<p style="color: var(--text-secondary);">No data to display</p>';
         return;
     }
 
     const headers = columns.map(col => col.name);
-    
+
     container.innerHTML = `
         <div class="neu-card-inset rounded-lg p-4 overflow-x-auto">
             <table class="min-w-full">
@@ -572,7 +644,7 @@ async function loadDatasets() {
         const { datasets } = response.data;
 
         const list = document.getElementById('datasets-list');
-        
+
         if (datasets.length === 0) {
             list.innerHTML = `
                 <div class="text-center py-12" style="color: var(--text-secondary);">
@@ -889,13 +961,13 @@ async function previewInsightSegment(analysis, payload = {}) {
             return;
         }
 
-    const title =
-        payload.title ||
-        (payload.equals !== undefined
-            ? `Rows where ${column} = ${payload.equals}`
-            : payload.direction === 'bottom'
-                ? `Lowest ${payload.percentile || 10}% of ${column}`
-                : `Top ${payload.percentile || 10}% of ${column}`);
+        const title =
+            payload.title ||
+            (payload.equals !== undefined
+                ? `Rows where ${column} = ${payload.equals}`
+                : payload.direction === 'bottom'
+                    ? `Lowest ${payload.percentile || 10}% of ${column}`
+                    : `Top ${payload.percentile || 10}% of ${column}`);
 
         showInsightSegmentModal({
             title,

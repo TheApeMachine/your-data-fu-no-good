@@ -105,14 +105,24 @@ upload.post('/', async (c) => {
       'analyzing'
     ).run();
 
-    const datasetId = datasetResult.meta.last_row_id as number;
+    let datasetId: number | undefined = Number(datasetResult.meta.last_row_id);
+    if (!Number.isFinite(datasetId)) {
+      const latest = await db
+        .prepare(`SELECT id FROM datasets ORDER BY id DESC`)
+        .first<{ id: number }>();
+      if (!latest?.id) {
+        throw new Error('Failed to determine dataset id after upload');
+      }
+      datasetId = latest.id;
+    }
+    const resolvedDatasetId = Number(datasetId);
 
     // Insert data rows in batches to keep DuckDB writes efficient
     const statements = rows.map((row, i) => 
       db.prepare(`
         INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
         VALUES (?, ?, ?, ?)
-      `).bind(datasetId, i, JSON.stringify(row), 0)
+      `).bind(resolvedDatasetId, i, JSON.stringify(row), 0)
     );
     
     // Execute in batches of 100
@@ -132,7 +142,7 @@ upload.post('/', async (c) => {
         INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)
         VALUES (?, ?, ?, 1)
       `).bind(
-        datasetId,
+        resolvedDatasetId,
         mapping.id_column,
         mapping.name_column
       ).run();
@@ -145,7 +155,7 @@ upload.post('/', async (c) => {
 
     return c.json({
       success: true,
-      dataset_id: datasetId,
+      dataset_id: resolvedDatasetId,
       message: 'Upload successful. Analysis started.',
       row_count: rows.length,
       column_count: columns.length,

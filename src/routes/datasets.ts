@@ -96,17 +96,22 @@ datasets.get('/', async (c) => {
   try {
     const db = resolveDatabase(c.env);
 
-    const result = await db.prepare(`
-      SELECT * FROM datasets ORDER BY upload_date DESC
-    `).all();
+    // Select only fields needed for the list view to reduce payload and CPU
+    const result = await db
+      .prepare(`
+        SELECT id, name, row_count, column_count, upload_date
+        FROM datasets
+        ORDER BY upload_date DESC
+      `)
+      .all<{ id: number; name: string | null; row_count: number | null; column_count: number | null; upload_date: string }>();
 
-    const datasets = result.results.map((d) => {
-      const parsedColumns = safeParseJson(d.columns);
-      return {
-        ...d,
-        columns: Array.isArray(parsedColumns) ? parsedColumns : [],
-      };
-    });
+    const datasets = result.results.map((d) => ({
+      id: d.id,
+      name: d.name,
+      row_count: d.row_count ?? 0,
+      column_count: d.column_count ?? 0,
+      upload_date: d.upload_date,
+    }));
 
     return c.json(normalizeValue({ datasets }));
   } catch (error) {

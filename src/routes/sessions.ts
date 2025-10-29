@@ -11,9 +11,50 @@ import type {
   SessionQueryResult,
 } from '../types';
 import { resolveDatabase } from '../storage';
+import type { DatabaseBinding } from '../storage/types';
 import { queueJoinDiscovery } from '../utils/join-discovery';
 
 const sessions = new Hono<{ Bindings: Bindings }>();
+
+// Row types returned from the database
+type WorkspaceSessionRow = {
+  id: number;
+  name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SessionDatasetJoinRow = {
+  session_id: number;
+  dataset_id: number;
+  alias: string | null;
+  position: number;
+  attached_at: string;
+  dataset_name: string | null;
+  row_count: number | null;
+  column_count: number | null;
+  file_type: string | null;
+};
+
+type JoinSuggestionRow = {
+  id: number;
+  session_id: number;
+  left_dataset_id: number;
+  right_dataset_id: number;
+  left_columns: unknown;
+  right_columns: unknown;
+  confidence: number | null;
+  sample: unknown;
+  status: string | null;
+  created_at: string;
+};
+
+type SessionStateRow = {
+  session_id: number;
+  version: number;
+  payload: unknown;
+  created_at: string;
+};
 
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value === null || value === undefined) return fallback;
@@ -42,11 +83,11 @@ function parseStringArray(value: unknown): string[] {
   return [];
 }
 
-async function fetchSessionSummary(db: any, sessionId: number): Promise<SessionSummary | null> {
+async function fetchSessionSummary(db: DatabaseBinding, sessionId: number): Promise<SessionSummary | null> {
   const sessionRow = await db
     .prepare(`SELECT id, name, created_at, updated_at FROM workspace_sessions WHERE id = ?`)
     .bind(sessionId)
-    .first();
+    .first<WorkspaceSessionRow>();
 
   if (!sessionRow) {
     return null;
@@ -62,7 +103,7 @@ async function fetchSessionSummary(db: any, sessionId: number): Promise<SessionS
        ORDER BY sd.position ASC, sd.dataset_id ASC`
     )
     .bind(sessionId)
-    .all();
+    .all<SessionDatasetJoinRow>();
 
   const datasets = datasetRows.results.map((row: any) => ({
     session_id: Number(row.session_id),
@@ -88,7 +129,7 @@ async function fetchSessionSummary(db: any, sessionId: number): Promise<SessionS
        ORDER BY confidence DESC, id DESC`
     )
     .bind(sessionId)
-    .all();
+    .all<JoinSuggestionRow>();
 
   const joinSuggestions: JoinSuggestionRecord[] = suggestionRows.results.map((row: any) => ({
     id: Number(row.id),
@@ -108,11 +149,10 @@ async function fetchSessionSummary(db: any, sessionId: number): Promise<SessionS
       `SELECT session_id, version, payload, created_at
        FROM session_state_snapshots
        WHERE session_id = ?
-       ORDER BY version DESC
-       LIMIT 1`
+       ORDER BY version DESC`
     )
     .bind(sessionId)
-    .first();
+    .first<SessionStateRow>();
 
   const latestState: SessionStateSnapshot | null = latestStateRow
     ? {
@@ -138,7 +178,7 @@ async function fetchSessionSummary(db: any, sessionId: number): Promise<SessionS
   return summary;
 }
 
-async function ensureSessionExists(db: any, sessionId: number) {
+async function ensureSessionExists(db: DatabaseBinding, sessionId: number) {
   const session = await db
     .prepare(`SELECT id FROM workspace_sessions WHERE id = ?`)
     .bind(sessionId)
@@ -150,7 +190,7 @@ async function ensureSessionExists(db: any, sessionId: number) {
   }
 }
 
-async function ensureDatasetAttached(db: any, sessionId: number, datasetId: number) {
+async function ensureDatasetAttached(db: DatabaseBinding, sessionId: number, datasetId: number) {
   const attached = await db
     .prepare(`SELECT 1 FROM session_datasets WHERE session_id = ? AND dataset_id = ?`)
     .bind(sessionId, datasetId)
@@ -279,10 +319,12 @@ sessions.post('/', async (c) => {
     const rawName = typeof body.name === 'string' ? body.name.trim() : '';
     const name = rawName.length > 0 ? rawName : null;
 
-    const sessionRow = await db
+    const sessionInsert = await db
       .prepare(`INSERT INTO workspace_sessions (name) VALUES (?) RETURNING id, name, created_at, updated_at`)
       .bind(name)
-      .first();
+      .all<WorkspaceSessionRow>();
+
+    const sessionRow = sessionInsert.results[0] ?? null;
 
     if (!sessionRow) {
       return c.json({ error: 'Failed to create session' }, 500);
@@ -291,7 +333,7 @@ sessions.post('/', async (c) => {
     const sessionId = Number(sessionRow.id);
 
     const datasetIds: number[] = Array.isArray(body.dataset_ids)
-      ? body.dataset_ids.map(Number).filter((id) => Number.isFinite(id))
+      ? body.dataset_ids.map(Number).filter((id: number) => Number.isFinite(id))
       : [];
 
     if (datasetIds.length > 0) {
@@ -299,7 +341,7 @@ sessions.post('/', async (c) => {
         const dataset = await db
           .prepare(`SELECT id, name FROM datasets WHERE id = ?`)
           .bind(datasetId)
-          .first();
+          .first<{ id: number; name: string | null }>();
         if (!dataset) {
           continue;
         }
@@ -307,7 +349,7 @@ sessions.post('/', async (c) => {
         const posRow = await db
           .prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM session_datasets WHERE session_id = ?`)
           .bind(sessionId)
-          .first();
+          .first<{ next_pos: number }>();
         const nextPos = Number(posRow?.next_pos ?? 1);
 
         await db
@@ -371,7 +413,7 @@ sessions.post('/:id/datasets', async (c) => {
     const datasetRow = await db
       .prepare(`SELECT id, name FROM datasets WHERE id = ?`)
       .bind(datasetId)
-      .first();
+      .first<{ id: number; name: string | null }>();
     if (!datasetRow) {
       return c.json({ error: 'Dataset not found' }, 404);
     }
@@ -387,7 +429,7 @@ sessions.post('/:id/datasets', async (c) => {
     const posRow = await db
       .prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM session_datasets WHERE session_id = ?`)
       .bind(sessionId)
-      .first();
+      .first<{ next_pos: number }>();
     const nextPos = Number(posRow?.next_pos ?? 1);
 
     const alias = typeof body.alias === 'string' && body.alias.trim().length > 0 ? body.alias.trim() : datasetRow.name;
@@ -459,7 +501,7 @@ sessions.get('/:id/datasets/:datasetId/columns', async (c) => {
     const datasetRow = await db
       .prepare(`SELECT id, columns, row_count, column_count FROM datasets WHERE id = ?`)
       .bind(datasetId)
-      .first();
+      .first<{ id: number; columns: unknown; row_count: number | null; column_count: number | null }>();
     if (!datasetRow) {
       return c.json({ error: 'Dataset not found' }, 404);
     }
@@ -508,7 +550,7 @@ sessions.get('/:id/datasets/:datasetId/rows', async (c) => {
     const datasetRow = await db
       .prepare(`SELECT id, row_count FROM datasets WHERE id = ?`)
       .bind(datasetId)
-      .first();
+      .first<{ id: number; row_count: number | null }>();
     if (!datasetRow) {
       return c.json({ error: 'Dataset not found' }, 404);
     }
@@ -524,7 +566,7 @@ sessions.get('/:id/datasets/:datasetId/rows', async (c) => {
         LIMIT ? OFFSET ?
       `)
       .bind(datasetId, limit, offset)
-      .all();
+      .all<{ row_number: number; data: unknown }>();
 
     const rows = rowResult.results.map((row: any) => {
       const parsed = parseJson<Record<string, unknown>>(row.data, {});
@@ -577,7 +619,7 @@ sessions.post('/:id/query', async (c) => {
     const datasetRow = await db
       .prepare(`SELECT id, columns, row_count FROM datasets WHERE id = ?`)
       .bind(datasetId)
-      .first();
+      .first<{ id: number; columns: unknown; row_count: number | null }>();
     if (!datasetRow) {
       return c.json({ error: 'Dataset not found' }, 404);
     }
@@ -637,7 +679,7 @@ sessions.post('/:id/query', async (c) => {
     `;
 
     const rowsParams = [datasetId, ...filterParams, limit, offset];
-    const rowResult = await db.prepare(rowsSql).bind(...rowsParams).all();
+    const rowResult = await db.prepare(rowsSql).bind(...rowsParams).all<{ row_number: number; data: unknown }>();
 
     const countSql = `
       SELECT COUNT(*) AS count
@@ -646,7 +688,7 @@ sessions.post('/:id/query', async (c) => {
     `;
 
     const countParams = [datasetId, ...filterParams];
-    const countRow = await db.prepare(countSql).bind(...countParams).first();
+    const countRow = await db.prepare(countSql).bind(...countParams).first<{ count: number }>();
     const total = Number(countRow?.count ?? datasetRow.row_count ?? 0);
 
     const rows = rowResult.results.map((row: any) => {
@@ -701,7 +743,7 @@ sessions.get('/:id/join-suggestions', async (c) => {
          ORDER BY confidence DESC, id DESC`
       )
       .bind(sessionId)
-      .all();
+      .all<JoinSuggestionRow>();
 
     const joinSuggestions: JoinSuggestionRecord[] = suggestionRows.results.map((row: any) => ({
       id: Number(row.id),
@@ -739,7 +781,7 @@ sessions.post('/:id/state', async (c) => {
     const versionRow = await db
       .prepare(`SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM session_state_snapshots WHERE session_id = ?`)
       .bind(sessionId)
-      .first();
+      .first<{ next_version: number }>();
     const nextVersion = Number(versionRow?.next_version ?? 1);
 
     await db
@@ -770,9 +812,9 @@ sessions.get('/:id/state', async (c) => {
     await ensureSessionExists(db, sessionId);
 
     const stateRow = await db
-      .prepare(`SELECT session_id, version, payload, created_at FROM session_state_snapshots WHERE session_id = ? ORDER BY version DESC LIMIT 1`)
+      .prepare(`SELECT session_id, version, payload, created_at FROM session_state_snapshots WHERE session_id = ? ORDER BY version DESC`)
       .bind(sessionId)
-      .first();
+      .first<SessionStateRow>();
 
     if (!stateRow) {
       return c.json({ session_id: sessionId, latest_state: null });

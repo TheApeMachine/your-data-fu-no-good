@@ -120,9 +120,19 @@ export class DuckDBBinding implements DatabaseBinding {
       };
 
       if (values.length > 0) {
-        this.db.all(finalSql, ...values, handler);
+        this.db.all(finalSql, ...values, (err: Error | null, rows?: T[]) => {
+          if (err) {
+            console.error('DuckDB query error:', finalSql, values, err);
+          }
+          handler(err, rows);
+        });
       } else {
-        this.db.all(finalSql, handler);
+        this.db.all(finalSql, (err: Error | null, rows?: T[]) => {
+          if (err) {
+            console.error('DuckDB query error:', finalSql, [], err);
+          }
+          handler(err, rows);
+        });
       }
     });
   }
@@ -134,6 +144,7 @@ export class DuckDBBinding implements DatabaseBinding {
       const values = params ?? [];
       const runCallback = function (this: any, err: Error | null) {
         if (err) {
+          console.error('DuckDB execute error:', sql, values, err);
           reject(err);
         } else if (options.skipLastId) {
           resolve({});
