@@ -1055,6 +1055,63 @@ async function applyFeatureSuggestion(analysis, payload = {}) {
     }
 }
 
+// Session API helpers for the forthcoming data canvas
+async function createSession(datasetIds = [], name = null) {
+    const payload = { dataset_ids: datasetIds };
+    if (name) payload.name = name;
+    const response = await axios.post('/api/sessions', payload);
+    return response.data;
+}
+
+async function getSession(sessionId) {
+    const response = await axios.get(`/api/sessions/${sessionId}`);
+    return response.data;
+}
+
+async function attachDatasetToSession(sessionId, datasetId, alias) {
+    const payload = { dataset_id: datasetId };
+    if (alias) payload.alias = alias;
+    const response = await axios.post(`/api/sessions/${sessionId}/datasets`, payload);
+    return response.data;
+}
+
+async function detachDatasetFromSession(sessionId, datasetId) {
+    const response = await axios.delete(`/api/sessions/${sessionId}/datasets/${datasetId}`);
+    return response.data;
+}
+
+async function getSessionDatasetColumns(sessionId, datasetId) {
+    const response = await axios.get(`/api/sessions/${sessionId}/datasets/${datasetId}/columns`);
+    return response.data;
+}
+
+async function getSessionDatasetRows(sessionId, datasetId, params = {}) {
+    const query = new URLSearchParams();
+    if (params.limit) query.set('limit', params.limit);
+    if (params.offset) query.set('offset', params.offset);
+    if (Array.isArray(params.columns) && params.columns.length) {
+        query.set('columns', params.columns.join(','));
+    }
+    const qs = query.toString();
+    const response = await axios.get(`/api/sessions/${sessionId}/datasets/${datasetId}/rows${qs ? `?${qs}` : ''}`);
+    return response.data;
+}
+
+async function runSessionQuery(sessionId, spec) {
+    const response = await axios.post(`/api/sessions/${sessionId}/query`, spec);
+    return response.data;
+}
+
+window.sessionAPI = {
+    createSession,
+    getSession,
+    attachDatasetToSession,
+    detachDatasetFromSession,
+    getSessionDatasetColumns,
+    getSessionDatasetRows,
+    runSessionQuery,
+};
+
 function getImportanceBg(importance) {
     const colors = {
         high: 'rgba(239, 68, 68, 0.1)',

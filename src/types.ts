@@ -133,3 +133,94 @@ export interface FeatureSuggestion {
   expected_benefit?: string;
   notes?: string[];
 }
+
+export interface WorkspaceSession {
+  id: number;
+  name: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionDataset {
+  session_id: number;
+  dataset_id: number;
+  alias?: string | null;
+  position: number;
+  attached_at: string;
+  dataset?: Pick<Dataset, 'name' | 'row_count' | 'column_count' | 'file_type'>;
+}
+
+export interface SessionStateSnapshot {
+  session_id: number;
+  version: number;
+  payload: any;
+  created_at: string;
+}
+
+export interface JoinSuggestionRecord {
+  id: number;
+  session_id: number;
+  left_dataset_id: number;
+  right_dataset_id: number;
+  left_columns: string[];
+  right_columns: string[];
+  confidence: number;
+  sample?: any;
+  status: 'suggested' | 'accepted' | 'rejected';
+  created_at: string;
+}
+
+export interface SessionSummary {
+  session: WorkspaceSession;
+  datasets: Array<SessionDataset & {
+    dataset: {
+      id: number;
+      name: string;
+      row_count: number;
+      column_count: number;
+      file_type: Dataset['file_type'];
+    };
+  }>;
+  join_suggestions: JoinSuggestionRecord[];
+  latest_state?: SessionStateSnapshot | null;
+}
+
+export type SessionQueryOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'contains' | 'in';
+
+export interface SessionQueryFilter {
+  column: string;
+  operator: SessionQueryOperator;
+  value: unknown;
+}
+
+export interface SessionQueryOrder {
+  column: string;
+  direction?: 'asc' | 'desc';
+}
+
+export interface SessionQuerySpec {
+  dataset_id: number;
+  columns?: string[];
+  limit?: number;
+  offset?: number;
+  filters?: SessionQueryFilter[];
+  order_by?: SessionQueryOrder[];
+}
+
+export interface SessionQueryResultRow {
+  row_number: number;
+  data: Record<string, unknown>;
+}
+
+export interface SessionQueryResultMeta {
+  limit: number;
+  offset: number;
+  total_rows: number;
+  query: string;
+  params: unknown[];
+}
+
+export interface SessionQueryResult {
+  rows: SessionQueryResultRow[];
+  meta: SessionQueryResultMeta;
+}

@@ -12,6 +12,7 @@ import chat from './routes/chat';
 import clean from './routes/clean';
 import features from './routes/features';
 import topics from './routes/topics';
+import sessions from './routes/sessions';
 
 export function createApp() {
   const app = new Hono<{ Bindings: Bindings }>();
@@ -100,6 +101,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
   app.route('/api/clean', clean);
   app.route('/api/features', features);
   app.route('/api/topics', topics);
+  app.route('/api/sessions', sessions);
 
   app.get('/api/health', (c) => {
     return c.json({ status: 'ok', timestamp: new Date().toISOString() });
