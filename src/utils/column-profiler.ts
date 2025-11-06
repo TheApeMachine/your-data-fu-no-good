@@ -1,4 +1,4 @@
-import type { ColumnBaseType, ColumnProfile } from '../types';
+import type { ColumnBaseType, ColumnProfile, ColumnDefinition } from '../types';
 
 const BOOLEAN_TRUE_VALUES = new Set(['true', 't', 'yes', 'y', '1']);
 const BOOLEAN_FALSE_VALUES = new Set(['false', 'f', 'no', 'n', '0']);
@@ -367,4 +367,40 @@ export function profileColumns(
   }
 
   return profiles;
+}
+
+import { MinHash } from './minhash';
+import type { DatabaseBinding } from '../storage/types';
+
+export async function computeDeepColumnProfiles(db: DatabaseBinding, datasetId: number): Promise<Record<string, { minhash?: string }>> {
+  const dataset = await db.prepare('SELECT columns FROM datasets WHERE id = ?').bind(datasetId).first<{ columns: string }>();
+  if (!dataset) return {};
+
+  const columns = JSON.parse(dataset.columns) as ColumnDefinition[];
+  const candidateColumns = columns.filter(c => c.type === 'string' && c.profile && c.profile.unique_ratio < 0.95); // Don't profile pure identifiers
+
+  const deepProfiles: Record<string, { minhash?: string }> = {};
+
+  for (const col of candidateColumns) {
+    const rowsResult = await db.prepare('SELECT data FROM data_rows WHERE dataset_id = ?').bind(datasetId).all<{ data: string }>();
+    if (!rowsResult.results) continue;
+
+    const values = new Set<string>();
+    rowsResult.results.forEach(row => {
+        try {
+            const parsed = JSON.parse(row.data);
+            const val = parsed[col.name];
+            if (typeof val === 'string' && val) {
+                values.add(val.trim());
+            }
+        } catch {}
+    });
+
+    if (values.size > 10) {
+      const minhash = new MinHash();
+      values.forEach(v => minhash.update(v));
+      deepProfiles[col.name] = { minhash: minhash.serialize() };
+    }
+  }
+  return deepProfiles;
 }

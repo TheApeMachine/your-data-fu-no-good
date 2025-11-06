@@ -163,14 +163,14 @@ const tools = [
 // Tool execution functions
 async function executeGetOutlierColumns(db: any, datasetId: string, args: any) {
   const minCount = args.min_outlier_count || 1;
-  
+
   const result = await db.prepare(`
     SELECT column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'outlier'
     ORDER BY quality_score DESC
   `).bind(datasetId).all();
-  
+
   const outliers = result.results
     .map((r: any) => {
       const res = JSON.parse(r.result);
@@ -183,7 +183,7 @@ async function executeGetOutlierColumns(db: any, datasetId: string, args: any) {
       };
     })
     .filter((o: any) => o.count >= minCount);
-  
+
   return {
     total_columns_with_outliers: outliers.length,
     outliers: outliers
@@ -193,21 +193,21 @@ async function executeGetOutlierColumns(db: any, datasetId: string, args: any) {
 async function executeGetCorrelationAnalysis(db: any, datasetId: string, args: any) {
   const minCorr = args.min_correlation || 0.5;
   const columnName = args.column_name;
-  
+
   let query = `
     SELECT column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'correlation'
   `;
-  
+
   if (columnName) {
     query += ` AND column_name LIKE '%${columnName}%'`;
   }
-  
+
   query += ` ORDER BY quality_score DESC`;
-  
+
   const result = await db.prepare(query).bind(datasetId).all();
-  
+
   const correlations = result.results
     .map((r: any) => {
       const res = JSON.parse(r.result);
@@ -220,7 +220,7 @@ async function executeGetCorrelationAnalysis(db: any, datasetId: string, args: a
       };
     })
     .filter((c: any) => Math.abs(c.correlation) >= minCorr);
-  
+
   return {
     total_correlations: correlations.length,
     correlations: correlations
@@ -229,23 +229,23 @@ async function executeGetCorrelationAnalysis(db: any, datasetId: string, args: a
 
 async function executeGetColumnStatistics(db: any, datasetId: string, args: any) {
   const columnName = args.column_name;
-  
+
   const result = await db.prepare(`
     SELECT analysis_type, column_name, result, explanation, importance, confidence, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND column_name = ?
     ORDER BY quality_score DESC
   `).bind(datasetId, columnName).all();
-  
+
   if (result.results.length === 0) {
     return { error: `No analysis found for column: ${columnName}` };
   }
-  
+
   const stats: any = {
     column: columnName,
     analyses: []
   };
-  
+
   result.results.forEach((r: any) => {
     stats.analyses.push({
       type: r.analysis_type,
@@ -256,36 +256,36 @@ async function executeGetColumnStatistics(db: any, datasetId: string, args: any)
       quality_score: r.quality_score
     });
   });
-  
+
   return stats;
 }
 
 async function executeSearchAnalyses(db: any, datasetId: string, args: any) {
   const analysisType = args.analysis_type;
   const keyword = args.keyword;
-  
+
   let query = `
     SELECT analysis_type, column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ?
   `;
-  
+
   const params = [datasetId];
-  
+
   if (analysisType) {
     query += ` AND analysis_type = ?`;
     params.push(analysisType);
   }
-  
+
   if (keyword) {
     query += ` AND explanation LIKE ?`;
     params.push(`%${keyword}%`);
   }
-  
+
   query += ` ORDER BY quality_score DESC LIMIT 50`;
-  
+
   const result = await db.prepare(query).bind(...params).all();
-  
+
   return {
     total_found: result.results.length,
     analyses: result.results.map((r: any) => ({
@@ -301,16 +301,16 @@ async function executeSearchAnalyses(db: any, datasetId: string, args: any) {
 async function executeGetDataSample(db: any, datasetId: string, args: any) {
   const limit = Math.min(args.limit || 5, 20);
   const columns = args.columns;
-  
+
   const result = await db.prepare(`
-    SELECT data FROM data_rows 
-    WHERE dataset_id = ? 
-    ORDER BY row_number 
+    SELECT data FROM data_rows
+    WHERE dataset_id = ?
+    ORDER BY row_number
     LIMIT ?
   `).bind(datasetId, limit).all();
-  
+
   const rows = result.results.map((r: any) => JSON.parse(r.data));
-  
+
   // Filter columns if specified
   if (columns && columns.length > 0) {
     return {
@@ -326,7 +326,7 @@ async function executeGetDataSample(db: any, datasetId: string, args: any) {
       row_count: rows.length
     };
   }
-  
+
   return {
     rows: rows,
     row_count: rows.length
@@ -335,13 +335,13 @@ async function executeGetDataSample(db: any, datasetId: string, args: any) {
 
 async function executeGetMissingValues(db: any, datasetId: string, args: any) {
   const minPercentage = args.min_missing_percentage || 0;
-  
+
   const result = await db.prepare(`
     SELECT analysis_type, column_name, result, explanation
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'missing'
   `).bind(datasetId).all();
-  
+
   const missingData = result.results
     .map((r: any) => {
       const res = JSON.parse(r.result);
@@ -353,7 +353,7 @@ async function executeGetMissingValues(db: any, datasetId: string, args: any) {
       };
     })
     .filter((m: any) => m.percentage >= minPercentage);
-  
+
   return {
     total_columns_with_missing: missingData.length,
     missing_values: missingData
@@ -362,28 +362,28 @@ async function executeGetMissingValues(db: any, datasetId: string, args: any) {
 
 async function executeSuggestDataCleaning(db: any, datasetId: string, args: any) {
   const columnName = args.column_name;
-  
+
   let query = `
     SELECT analysis_type, column_name, result, explanation
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ?
   `;
-  
+
   const params = [datasetId];
-  
+
   if (columnName) {
     query += ` AND column_name = ?`;
     params.push(columnName);
   }
-  
+
   const result = await db.prepare(query).bind(...params).all();
-  
+
   const suggestions: any[] = [];
-  
+
   result.results.forEach((r: any) => {
     const res = JSON.parse(r.result);
     const type = r.analysis_type;
-    
+
     if (type === 'outlier' && res.count > 0) {
       suggestions.push({
         column: r.column_name,
@@ -393,7 +393,7 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
         details: r.explanation
       });
     }
-    
+
     if (type === 'missing' && res.count > 0) {
       suggestions.push({
         column: r.column_name,
@@ -403,7 +403,7 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
         details: r.explanation
       });
     }
-    
+
     const modePercentage = res.modePercentage ?? res.mode_frequency;
     if (type === 'pattern' && modePercentage > 80) {
       suggestions.push({
@@ -415,12 +415,12 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
       });
     }
   });
-  
+
   return {
     total_suggestions: suggestions.length,
     suggestions: suggestions.sort((a, b) => {
       const severityOrder = { high: 3, medium: 2, low: 1 };
-      return (severityOrder[b.severity as keyof typeof severityOrder] || 0) - 
+      return (severityOrder[b.severity as keyof typeof severityOrder] || 0) -
              (severityOrder[a.severity as keyof typeof severityOrder] || 0);
     })
   };
@@ -428,7 +428,7 @@ async function executeSuggestDataCleaning(db: any, datasetId: string, args: any)
 
 async function executeGenerateMongoDBQuery(db: any, datasetId: string, args: any, apiKey: string, model: string) {
   const { description, query_type } = args;
-  
+
   // Build a specialized prompt for MongoDB query generation
   const mongoPrompt = `You are a MongoDB query expert. Generate a valid MongoDB ${query_type === 'aggregate' ? 'aggregation pipeline' : 'query'} based on this description:
 
@@ -476,13 +476,13 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
 
     const data = await openaiResponse.json();
     const generatedText = data.choices?.[0]?.message?.content || '';
-    
+
     // Try to extract JSON from the response
     let queryJson = generatedText.trim();
-    
+
     // Remove markdown code blocks if present
     queryJson = queryJson.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    
+
     // Validate JSON
     let parsed;
     try {
@@ -501,7 +501,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
       generated_query: parsed,
       explanation: `Generated MongoDB ${query_type === 'aggregate' ? 'aggregation pipeline' : 'query'} based on: "${description}"`,
       raw_json: queryJson,
-      usage_example: query_type === 'aggregate' 
+      usage_example: query_type === 'aggregate'
         ? 'Use this in MongoDB import: paste into "Aggregation Pipeline" field'
         : 'Use this in MongoDB import: paste into "Query" field'
     };
@@ -514,6 +514,30 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
   }
 }
 
+// Helper function to get dataset context for the main chat endpoint
+async function getDatasetContext(db: any, datasetId: string) {
+  const dataset = await db
+    .prepare(`SELECT name, columns, row_count, column_count FROM datasets WHERE id = ?`)
+    .bind(datasetId)
+    .first<{ name: string; columns: string; row_count: number; column_count: number }>();
+
+  if (!dataset) {
+    throw new Error('Dataset not found');
+  }
+  const columns = JSON.parse(dataset.columns as string);
+  const context = `
+You are a helpful data analysis assistant. Your goal is to provide insights on a given dataset.
+
+Dataset name: ${dataset.name}
+Rows: ${dataset.row_count}
+Columns: ${dataset.column_count}
+
+Available columns for analysis:
+${columns.map((col: any) => `- ${col.name} (type: ${col.type})`).join('\n')}
+`;
+  return { context, columns };
+}
+
 // Streaming chat endpoint
 chat.post('/:datasetId/stream', async (c) => {
   const datasetId = c.req.param('datasetId');
@@ -522,7 +546,7 @@ chat.post('/:datasetId/stream', async (c) => {
   // Check if OpenAI API key is configured
   const apiKey = c.env.OPENAI_API_KEY;
   if (!apiKey || apiKey.includes('your-openai-api-key')) {
-    return c.json({ 
+    return c.json({
       error: 'OpenAI API key not configured',
       message: 'Please configure your OpenAI API key'
     }, 500);
@@ -530,11 +554,14 @@ chat.post('/:datasetId/stream', async (c) => {
 
   // Fetch dataset context
   const db = resolveDatabase(c.env);
-  const dataset = await db.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
+  const dataset = await db
+    .prepare(`SELECT name, columns, row_count, column_count FROM datasets WHERE id = ?`)
+    .bind(datasetId)
+    .first<{ name: string; columns: string; row_count: number; column_count: number }>();
+
   if (!dataset) {
     return c.json({ error: 'Dataset not found' }, 404);
   }
-
   const columns = JSON.parse(dataset.columns as string);
   const systemPrompt = `You are a friendly insight assistant for business users with limited data-science background.
 
@@ -706,25 +733,25 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
 
     // Send tool calls used
     await stream.write(`data: ${JSON.stringify({type: 'tool_calls_complete', tools: toolCallsUsed})}\n\n`);
-    
+
     // Generate suggestions
     const suggestions = generateSuggestions(message, []);
     await stream.write(`data: ${JSON.stringify({type: 'suggestions', suggestions})}\n\n`);
-    
+
     await stream.write(`data: ${JSON.stringify({type: 'done'})}\n\n`);
   });
 });
 
 // Main chat endpoint (non-streaming for compatibility)
-chat.post('/:datasetId', async (c) => {
+chat.post('/:id', async (c) => {
   try {
-    const datasetId = c.req.param('datasetId');
+    const datasetId = c.req.param('id');
     const { message, conversationHistory = [] } = await c.req.json();
 
     // Check if OpenAI API key is configured
     const apiKey = c.env.OPENAI_API_KEY;
     if (!apiKey || apiKey.includes('your-openai-api-key')) {
-      return c.json({ 
+      return c.json({
         error: 'OpenAI API key not configured',
         message: getFallbackResponse(message)
       }, 500);
@@ -732,33 +759,8 @@ chat.post('/:datasetId', async (c) => {
 
     // Fetch dataset context
     const db = resolveDatabase(c.env);
-    const dataset = await db.prepare(`
-      SELECT * FROM datasets WHERE id = ?
-    `).bind(datasetId).first();
+    const { context: systemPrompt, columns } = await getDatasetContext(db, datasetId);
 
-    if (!dataset) {
-      return c.json({ error: 'Dataset not found' }, 404);
-    }
-
-    // Build lightweight system prompt (since we have tools now)
-    const columns = JSON.parse(dataset.columns as string);
-    const systemPrompt = `You are a friendly insight assistant for business users with limited data-science background.
-
-Dataset name: ${dataset.name}
-Rows: ${dataset.row_count}
-Columns: ${dataset.column_count}
-
-Available tools let you fetch precise facts (statistics, correlations, samples, data quality issues, cleaning tips, MongoDB queries). Use them when you need evidence, then translate the meaning into plain language.
-
-Guidelines:
-- Lead with the story, not the stats. Start every answer with 2–3 bullet points titled "What this means" that explain the impact or pattern in everyday words.
-- Mention numbers only when they change the decision (round them sensibly, e.g. “about 84% missing”).
-- Highlight data quality risks, but immediately suggest what the user could do about them (cleaning option, extra column to create, question to ask the data owner).
-- Finish with a short "Suggested next steps" list (max 3 bullets) that keeps the user moving forward.
-- Never dump raw tables or long lists of metrics. The user wants actionable intelligence, not diagnostics.
-- If the user asks for a query or deeper dive, call the appropriate tool and summarise the result in the same approachable tone.
-
-Keep answers concise (under 4 short paragraphs total) and make sure every piece of evidence is tied to why it matters.`;
 
     // Build messages array
     const messages = [
@@ -769,13 +771,13 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
 
     // Call OpenAI API with tools
     const model = c.env.OPENAI_MODEL || 'gpt-4o-mini';
-    
+
     console.log(`Calling OpenAI API with model: ${model} and ${tools.length} tools`);
-    
+
     let assistantMessage = '';
     let currentMessages = [...messages];
     const toolCallsUsed: Array<{name: string, args: any}> = [];
-    
+
     // Tool calling loop (max 5 iterations to prevent infinite loops)
     for (let iteration = 0; iteration < 5; iteration++) {
       const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -795,11 +797,11 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
       });
 
       const responseText = await openaiResponse.text();
-      
+
       if (!openaiResponse.ok) {
         console.error('OpenAI API error status:', openaiResponse.status);
         console.error('OpenAI API error response:', responseText);
-        return c.json({ 
+        return c.json({
           error: 'Failed to get response from OpenAI',
           message: getFallbackResponse(message)
         }, 500);
@@ -807,34 +809,34 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
 
       const data = JSON.parse(responseText);
       const choice = data.choices?.[0];
-      
+
       if (!choice) {
         console.error('No choice in OpenAI response:', data);
-        return c.json({ 
+        return c.json({
           error: 'Empty response from OpenAI',
           message: getFallbackResponse(message)
         }, 500);
       }
 
       const responseMessage = choice.message;
-      
+
       // Check if there are tool calls
       if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
         console.log(`Tool calls requested: ${responseMessage.tool_calls.length}`);
-        
+
         // Add assistant message with tool calls to conversation
         currentMessages.push(responseMessage);
-        
+
         // Execute each tool call
         for (const toolCall of responseMessage.tool_calls) {
           const functionName = toolCall.function.name;
           const functionArgs = JSON.parse(toolCall.function.arguments);
-          
+
           // Track tool calls for frontend display
           toolCallsUsed.push({ name: functionName, args: functionArgs });
-          
+
           console.log(`Executing tool: ${functionName}`, functionArgs);
-          
+
           let toolResult;
           try {
             switch (functionName) {
@@ -869,7 +871,7 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
             console.error(`Tool execution error for ${functionName}:`, error);
             toolResult = { error: `Failed to execute ${functionName}: ${error}` };
           }
-          
+
           // Add tool result to conversation
           currentMessages.push({
             role: 'tool',
@@ -877,18 +879,18 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
             content: JSON.stringify(toolResult)
           });
         }
-        
+
         // Continue loop to get final response
         continue;
       }
-      
+
       // No more tool calls, we have the final response
       assistantMessage = responseMessage.content || '';
       break;
     }
 
     if (!assistantMessage) {
-      return c.json({ 
+      return c.json({
         error: 'No final response from OpenAI',
         message: getFallbackResponse(message)
       }, 500);
@@ -906,7 +908,7 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
   } catch (error) {
     console.error('Chat error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
-    return c.json({ 
+    return c.json({
       error: 'Chat failed: ' + errorMessage,
       message: getFallbackResponse('error')
     }, 500);
@@ -937,11 +939,11 @@ function generateSuggestions(userMessage: string, analyses: any[]): string[] {
 
 function getFallbackResponse(message: string): string {
   const messageLower = message.toLowerCase();
-  
+
   if (messageLower.includes('outlier')) {
     return "To see outliers, go to the 'Insights' tab and search for 'outlier'.";
   }
-  
+
   if (messageLower.includes('correlat')) {
     return "Check the 'Insights' tab and search for 'correlation'.";
   }

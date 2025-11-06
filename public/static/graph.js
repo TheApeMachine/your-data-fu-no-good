@@ -16,7 +16,7 @@ function escapeHtml(value) {
 }
 
 function switchTab(tabName) {
-    const tabs = ['insights', 'relationships', 'topics', 'mappings'];
+    const tabs = ['insights', 'forensics', 'relationships', 'topics', 'mappings'];
     tabs.forEach((name) => {
         const button = document.getElementById(`tab-${name}`);
         const content = document.getElementById(`tab-content-${name}`);
@@ -39,6 +39,12 @@ function switchTab(tabName) {
     if (tabName === 'mappings' && currentDatasetId) {
         loadColumnMappings(currentDatasetId);
     }
+
+    if (tabName === 'forensics' && currentDatasetId) {
+        if (!forensicsLoaded) {
+            loadForensicsOverview(currentDatasetId);
+        }
+    }
 }
 
 async function loadRelationshipGraph(datasetId) {
@@ -55,7 +61,7 @@ async function loadRelationshipGraph(datasetId) {
 
 function renderGraph(nodes, edges) {
     const container = document.getElementById('graph-container');
-    
+
     // Clear container
     container.innerHTML = '<div id="cy" style="width: 100%; height: 100%;"></div>';
 
@@ -78,7 +84,7 @@ function renderGraph(nodes, edges) {
 
     // Convert to Cytoscape format
     const elements = [];
-    
+
     // Add only connected nodes
     connectedNodes.forEach(node => {
         elements.push({
@@ -90,7 +96,7 @@ function renderGraph(nodes, edges) {
             }
         });
     });
-    
+
     // Add edges
     edges.forEach(edge => {
         elements.push({
@@ -108,9 +114,9 @@ function renderGraph(nodes, edges) {
     // Initialize Cytoscape
     cy = cytoscape({
         container: document.getElementById('cy'),
-        
+
         elements: elements,
-        
+
         style: [
             {
                 selector: 'node',
@@ -218,7 +224,7 @@ function renderGraph(nodes, edges) {
                 }
             }
         ],
-        
+
         layout: {
             name: 'preset'
         }
@@ -669,7 +675,7 @@ async function loadColumnMappings(datasetId) {
     try {
         const response = await axios.get(`/api/mappings/${datasetId}`);
         const mappings = response.data.mappings;
-        
+
         renderMappingsTable(mappings);
     } catch (error) {
         console.error('Error loading mappings:', error);
@@ -679,12 +685,12 @@ async function loadColumnMappings(datasetId) {
 
 function renderMappingsTable(mappings) {
     const container = document.getElementById('mappings-container');
-    
+
     if (mappings.length === 0) {
         container.innerHTML = '<p class="text-gray-500">No column mappings detected for this dataset.</p>';
         return;
     }
-    
+
     let html = `
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
@@ -698,7 +704,7 @@ function renderMappingsTable(mappings) {
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
     `;
-    
+
     mappings.forEach(mapping => {
         html += `
             <tr>
@@ -715,7 +721,7 @@ function renderMappingsTable(mappings) {
             </tr>
         `;
     });
-    
+
     html += `
                 </tbody>
             </table>
@@ -726,13 +732,13 @@ function renderMappingsTable(mappings) {
             </button>
         </div>
     `;
-    
+
     container.innerHTML = html;
 }
 
 async function deleteMapping(mappingId) {
     if (!confirm('Are you sure you want to delete this mapping?')) return;
-    
+
     try {
         await axios.delete(`/api/mappings/${mappingId}`);
         loadColumnMappings(currentDatasetId);

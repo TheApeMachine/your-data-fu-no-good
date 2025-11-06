@@ -149,12 +149,12 @@ datasets.get('/:id', async (c) => {
     });
 
     const rawColumns = safeParseJson(dataset.columns);
-    const datasetColumns = Array.isArray(rawColumns) ? rawColumns : [];
+    const columns = Array.isArray(rawColumns) ? rawColumns as ColumnDefinition[] : [];
 
     return c.json(normalizeValue({
       dataset: {
         ...dataset,
-        columns: datasetColumns,
+        columns: columns,
       },
       sample
     }));

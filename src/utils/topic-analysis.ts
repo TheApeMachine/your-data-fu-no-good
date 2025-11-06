@@ -125,7 +125,7 @@ export async function computeTextTopics(
 
   const dataset = await db.prepare(`SELECT columns FROM datasets WHERE id = ?`).bind(datasetId).first();
   if (!dataset) {
-    return [];
+    return { topics: [], similarities: [], clusters: [] };
   }
 
   const columnDefinitions: any[] = JSON.parse(dataset.columns as string);
@@ -143,7 +143,7 @@ export async function computeTextTopics(
       }
       return { row_number: Number(row.row_number), data: parsed as Record<string, unknown> };
     })
-    .filter((entry): entry is { row_number: number; data: Record<string, unknown> } => entry !== null);
+    .filter((entry: any): entry is { row_number: number; data: Record<string, unknown> } => entry !== null);
 
   const topics: TextTopic[] = [];
   const columnVectors = new Map<string, Map<string, number>>();
@@ -204,11 +204,15 @@ export async function computeTextTopics(
 
     const samples = buildRepresentativeSamples(docs, topKeywords);
 
+    const uniqueTermCount = termFrequency.size;
+    // Use 5% of unique terms, but clamp between 8 and 20 keywords for display
+    const finalKeywordCount = Math.max(8, Math.min(20, Math.round(uniqueTermCount * 0.10)));
+
     topics.push({
       column: column.name,
       document_count: docCount,
       average_length: Math.round(avgLength),
-      keywords: topKeywords.slice(0, 12),
+      keywords: topKeywords.slice(0, finalKeywordCount),
       samples,
       vector: topKeywords.map(({ term, score }) => ({ term, weight: score })),
     });

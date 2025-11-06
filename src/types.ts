@@ -55,6 +55,7 @@ export interface ColumnProfile {
     stddev?: number;
     skewness?: number;
   };
+  minhash?: string; // Serialized MinHash signature
 }
 
 export interface ColumnDefinition {
@@ -223,4 +224,35 @@ export interface SessionQueryResultMeta {
 export interface SessionQueryResult {
   rows: SessionQueryResultRow[];
   meta: SessionQueryResultMeta;
+}
+
+export type ForensicSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+export type ForensicCaseStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
+
+export interface ForensicEvent {
+  id: number;
+  dataset_id: number;
+  session_id?: number | null;
+  event_type: string;
+  severity: ForensicSeverity;
+  signal_score?: number | null;
+  occurred_at: string;
+  summary?: string | null;
+  details?: any;
+}
+
+export interface ForensicCase {
+  id: number;
+  session_id?: number | null;
+  primary_dataset_id?: number | null;
+  case_type: string;
+  status: ForensicCaseStatus;
+  severity: ForensicSeverity;
+  title?: string | null;
+  hypothesis?: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence?: any;
+  events?: ForensicEvent[];
 }

@@ -653,6 +653,98 @@ export function describePattern(
   };
 }
 
+function summarizeClusterProfile(
+  cluster: { profile: Record<string, { description: 'low' | 'average' | 'high' }> }
+): string {
+  const highs = [];
+  const lows = [];
+
+  for (const [col, prof] of Object.entries(cluster.profile)) {
+    if (prof.description === 'high') {
+      highs.push(col);
+    } else if (prof.description === 'low') {
+      lows.push(col);
+    }
+  }
+
+  const parts = [];
+  if (highs.length > 0) {
+    parts.push(`high ${highs.join(', ')}`);
+  }
+  if (lows.length > 0) {
+    parts.push(`low ${lows.join(', ')}`);
+  }
+
+  if (parts.length === 0) return 'average across all metrics';
+  return parts.join(' and ');
+}
+
+export function describeClustering(
+  result: { columns: string[], clusters: any[] }
+): InsightDescription {
+  const mainAxes = result.columns.slice(0, 3).join(', ');
+  const totalClusters = result.clusters.length;
+
+  const narrative: InsightNarrative = {
+    meaning: `We found ${totalClusters} distinct groups in your data based on ${mainAxes}. Each group represents a cohort with unique purchasing habits or user behaviors.`,
+    impact: 'This segmentation is your cheat-sheet for targeted marketing, product personalization, or identifying at-risk customers before they churn.',
+  };
+
+  const topCluster = result.clusters[0];
+  const summary = summarizeClusterProfile(topCluster);
+  narrative.action = `Start by exploring the largest group (${formatPercent(topCluster.size / result.clusters.reduce((acc, c) => acc + c.size, 0), 0)} of the data), which is characterized by ${summary}. Understanding this core segment is the first step to unlocking growth.`;
+
+  narrative.signal = `Clustering performed on ${result.columns.length} numeric columns.`;
+
+  const actions: InsightAction[] = result.clusters.map((cluster, index) => ({
+    id: 'view_cluster',
+    label: `Explore Group ${index + 1} (${summarizeClusterProfile(cluster)})`,
+    payload: {
+      clusterId: cluster.id,
+      columns: result.columns,
+      title: `Group ${index + 1}: ${summarizeClusterProfile(cluster)}`
+    },
+  }));
+
+  return {
+    text: composeNarrative(narrative),
+    actions,
+  };
+}
+
+export function describeJoinSuggestion(
+  leftDataset: { name: string },
+  rightDataset: { name: string },
+  suggestion: { left_columns: string, right_columns: string, confidence: number, left_dataset_id: number, right_dataset_id: number }
+): InsightDescription {
+  const leftCol = JSON.parse(suggestion.left_columns)[0];
+  const rightCol = JSON.parse(suggestion.right_columns)[0];
+  const confidencePercent = formatPercent(suggestion.confidence, 0);
+
+  const narrative: InsightNarrative = {
+    meaning: `We found a strong link (${confidencePercent} confidence) between ${leftDataset.name}.${leftCol} and ${rightDataset.name}.${rightCol}.`,
+    impact: `Joining these two datasets on this column will allow you to connect their information, creating a richer, more complete view for analysis. For example, you could link customer profiles to their sales records.`,
+    action: `Preview the join to see how the data aligns, then apply it to create a new, combined dataset for your session.`,
+    signal: `Confidence is based on a blend of value similarity and column name similarity.`
+  };
+
+  const actions: InsightAction[] = [{
+      id: 'preview_join',
+      label: `Preview Join on ${leftCol} <> ${rightCol}`,
+      payload: {
+          left_dataset_id: suggestion.left_dataset_id,
+          right_dataset_id: suggestion.right_dataset_id,
+          left_column: leftCol,
+          right_column: rightCol,
+      }
+  }];
+
+  return {
+    text: composeNarrative(narrative),
+    actions,
+  };
+}
+
 export function describeFeatureSuggestion(suggestion: FeatureSuggestion): InsightDescription {
   const columnsText = suggestion.columns.join(', ');
   const friendly = friendlyTransformationName(suggestion.transformation);

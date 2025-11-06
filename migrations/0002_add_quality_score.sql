@@ -1,2 +1,0 @@
--- Migration folded into 0001 for DuckDB deployment.
--- Kept for compatibility; no operation required.

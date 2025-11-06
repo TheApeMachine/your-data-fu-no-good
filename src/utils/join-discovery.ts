@@ -1,5 +1,6 @@
 import type { DatabaseBinding } from '../storage/types';
 import type { ColumnDefinition } from '../types';
+import { MinHash } from './minhash';
 
 const MIN_CONFIDENCE = 0.55;
 
@@ -44,11 +45,41 @@ function sanitizeColumns(column: ColumnDefinition[]): Record<string, ColumnDefin
   }, {});
 }
 
-function computeConfidence(ratioA: number, ratioB: number): number {
+// Fallback for non-MinHashed columns
+function computeStatConfidence(ratioA: number, ratioB: number): number {
   const diff = Math.abs(ratioA - ratioB);
   const base = 0.6 - diff * 0.4;
   return Math.max(0, Math.min(1, 0.5 + base));
 }
+
+// Levenshtein distance for name similarity
+function levenshtein(s1: string, s2: string): number {
+    s1 = s1.toLowerCase().replace(/_/g, '').replace(/ /g, '');
+    s2 = s2.toLowerCase().replace(/_/g, '').replace(/ /g, '');
+
+    const len1 = s1.length;
+    const len2 = s2.length;
+    if (len1 === 0 || len2 === 0) return 0;
+
+    const matrix = Array(len2 + 1).fill(null).map(() => Array(len1 + 1).fill(null));
+
+    for (let i = 0; i <= len1; i++) matrix[0][i] = i;
+    for (let j = 0; j <= len2; j++) matrix[j][0] = j;
+
+    for (let j = 1; j <= len2; j++) {
+        for (let i = 1; i <= len1; i++) {
+            const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+            matrix[j][i] = Math.min(
+                matrix[j][i - 1] + 1,
+                matrix[j - 1][i] + 1,
+                matrix[j - 1][i - 1] + cost
+            );
+        }
+    }
+    const maxLen = Math.max(len1, len2);
+    return maxLen === 0 ? 1 : (maxLen - matrix[len2][len1]) / maxLen;
+}
+
 
 async function upsertJoinSuggestion(
   db: DatabaseBinding,
@@ -78,7 +109,7 @@ async function upsertJoinSuggestion(
   if (existing) {
     await db
       .prepare(`UPDATE join_suggestions SET confidence = ?, status = 'suggested', created_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(confidence, existing.id)
+      .bind(confidence, (existing as any).id)
       .run();
     return;
   }
@@ -99,9 +130,6 @@ async function upsertJoinSuggestion(
     .run();
 }
 
-/**
- * Lightweight join discovery: matches columns with identical names and compatible stats across session datasets.
- */
 export async function queueJoinDiscovery(db: DatabaseBinding, sessionId: number): Promise<void> {
   try {
     const datasetRows = await db
@@ -127,25 +155,45 @@ export async function queueJoinDiscovery(db: DatabaseBinding, sessionId: number)
         const right = datasets[j];
         if (!left.columns.length || !right.columns.length) continue;
 
-        const leftMap = sanitizeColumns(left.columns);
-        const rightMap = sanitizeColumns(right.columns);
+        for (const leftCol of left.columns) {
+            for (const rightCol of right.columns) {
+                // Rule 1: Compatible types
+                if (leftCol.type !== rightCol.type) continue;
 
-        for (const columnName of Object.keys(leftMap)) {
-          const leftCol = leftMap[columnName];
-          const rightCol = rightMap[columnName];
-          if (!rightCol) continue;
+                // Rule 2: At least one should be a potential key
+                if (!isCandidateKey(leftCol, left.row_count) && !isCandidateKey(rightCol, right.row_count)) continue;
 
-          if (!isCandidateKey(leftCol, left.row_count) || !isCandidateKey(rightCol, right.row_count)) {
-            continue;
-          }
+                let confidence = 0;
+                let valueSimilarity = 0;
 
-          const ratioA = getUniqueRatio(leftCol, left.row_count);
-          const ratioB = getUniqueRatio(rightCol, right.row_count);
+                if (leftCol.type === 'string' && leftCol.profile?.minhash && rightCol.profile?.minhash) {
+                    try {
+                        const leftMinHash = MinHash.deserialize(leftCol.profile.minhash);
+                        const rightMinHash = MinHash.deserialize(rightCol.profile.minhash);
+                        valueSimilarity = leftMinHash.jaccard(rightMinHash);
+                    } catch (e) {
+                        console.error("Failed to deserialize MinHash", e);
+                        continue;
+                    }
+                } else {
+                    // Fallback for non-string or non-minhashed columns
+                    valueSimilarity = computeStatConfidence(
+                        getUniqueRatio(leftCol, left.row_count),
+                        getUniqueRatio(rightCol, right.row_count)
+                    );
+                }
 
-          const confidence = computeConfidence(ratioA, ratioB);
-          if (confidence < MIN_CONFIDENCE) continue;
+                if (valueSimilarity < 0.2) continue; // Prune early
 
-          await upsertJoinSuggestion(db, sessionId, left.dataset_id, right.dataset_id, leftCol.name, rightCol.name, confidence);
+                const nameSimilarity = levenshtein(leftCol.name, rightCol.name);
+
+                // Weighted confidence score
+                confidence = (valueSimilarity * 0.7) + (nameSimilarity * 0.3);
+
+                if (confidence > MIN_CONFIDENCE) {
+                    await upsertJoinSuggestion(db, sessionId, left.dataset_id, right.dataset_id, leftCol.name, rightCol.name, confidence);
+                }
+            }
         }
       }
     }

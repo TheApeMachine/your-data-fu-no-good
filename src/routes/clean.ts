@@ -1,195 +1,126 @@
 // Data cleaning API route
 
 import { Hono } from 'hono';
-import { cleanDataset, suggestKeyColumns, type CleaningOptions } from '../utils/data-cleaner';
+import { suggestKeyColumns, cleanDataset } from '../utils/data-cleaner';
+import type { Bindings, ColumnDefinition, Analysis } from '../types';
+import { resolveDatabase } from '../storage';
+import { profileColumns } from '../utils/column-profiler';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
-import { inferColumnTypes } from '../utils/papa-parser';
-import type { Bindings, ColumnDefinition } from '../types';
-import { resolveDatabase } from '../storage';
+import type { CleaningOptions } from '../utils/data-cleaner';
+import type { DatabaseBinding } from '../storage/types';
 
 const clean = new Hono<{ Bindings: Bindings }>();
 
-// Get suggested key columns for a dataset
 clean.get('/:id/suggestions', async (c) => {
   try {
+    const db: DatabaseBinding = c.env.DB;
     const datasetId = Number(c.req.param('id'));
-    const db = resolveDatabase(c.env);
+    const rowsResult = await db.prepare(`SELECT data FROM data_rows WHERE dataset_id = ? LIMIT 1000`).bind(datasetId).all();
+    const dataset = await db.prepare(`SELECT columns FROM datasets WHERE id = ?`).bind(datasetId).first();
 
-    // Get dataset
-    const dataset = await db.prepare(`
-      SELECT * FROM datasets WHERE id = ?
-    `).bind(datasetId).first();
-
-    if (!dataset) {
-      return c.json({ error: 'Dataset not found' }, 404);
+    if (!rowsResult.results || !dataset) {
+      return c.json({ error: 'Dataset not found or empty' }, 404);
     }
 
-    // Get data rows
-    const rowsResult = await db.prepare(`
-      SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0 LIMIT 1000
-    `).bind(datasetId).all();
-
-    const rows = rowsResult.results.map(r => JSON.parse(r.data as string));
+    const rows = rowsResult.results.map((r: any) => JSON.parse((r as { data: string }).data));
     const columns: ColumnDefinition[] = JSON.parse(dataset.columns as string);
-
-    const suggestions = suggestKeyColumns(rows, columns);
+    const suggestedKeys = suggestKeyColumns(rows, columns);
 
     return c.json({
       success: true,
-      suggestedKeyColumns: suggestions,
+      suggestedKeyColumns: suggestedKeys,
       allColumns: columns.map((c: any) => c.name)
     });
-
-  } catch (error: any) {
-    console.error('Error getting cleaning suggestions:', error);
-    return c.json({ error: error.message || 'Failed to get suggestions' }, 500);
+  } catch (err: any) {
+    console.error('Failed to get cleaning suggestions:', err.message, err.stack);
+    return c.json({ error: 'Failed to get cleaning suggestions' }, 500);
   }
 });
 
-// Clean a dataset
 clean.post('/:id', async (c) => {
   try {
+    const db: DatabaseBinding = c.env.DB;
     const datasetId = Number(c.req.param('id'));
     const options: CleaningOptions = await c.req.json();
-    const db = resolveDatabase(c.env);
+    const rowsResult = await db.prepare(`SELECT data FROM data_rows WHERE dataset_id = ?`).bind(datasetId).all();
+    const dataset = await db.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
 
-    console.log(`Starting ${options.level} cleaning for dataset ${datasetId}`);
-
-    // Get original dataset
-    const dataset = await db.prepare(`
-      SELECT * FROM datasets WHERE id = ?
-    `).bind(datasetId).first();
-
-    if (!dataset) {
-      return c.json({ error: 'Dataset not found' }, 404);
+    if (!rowsResult.results || !dataset) {
+      return c.json({ error: 'Dataset not found or empty' }, 404);
     }
-
-    // Get all data rows
-    const rowsResult = await db.prepare(`
-      SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
-    `).bind(datasetId).all();
-
-    const originalRows = rowsResult.results.map(r => JSON.parse(r.data as string));
+    const originalRows = rowsResult.results.map((r: any) => JSON.parse((r as { data: string }).data));
     const columns = JSON.parse(dataset.columns as string);
 
-    // Perform cleaning
-    const cleaningResult = cleanDataset(originalRows, columns, options);
+    const result = cleanDataset(originalRows, columns, options);
 
-    if (cleaningResult.cleanedRowCount === 0) {
-      return c.json({ error: 'Cleaning removed all rows. Try a less aggressive cleaning level.' }, 400);
-    }
-
-    // Re-infer column types (types might change after cleaning)
-    const newColumnProfiles = inferColumnTypes(cleaningResult.cleanedData);
-    const newColumns: ColumnDefinition[] = columns.map((col) => {
-      const profile = newColumnProfiles[col.name] ?? col.profile;
-      const nullable = profile
-        ? profile.null_count > 0
-        : cleaningResult.cleanedData.some(row => row[col.name] === null || row[col.name] === undefined || row[col.name] === '');
-      const uniqueCount = profile?.unique_count ?? col.unique_count ?? new Set(cleaningResult.cleanedData.map(row => row[col.name])).size;
-      const sampleValues = profile?.sample_values ?? col.sample_values ?? cleaningResult.cleanedData.slice(0, 3).map(row => row[col.name]);
-
+    // Create new dataset
+    const newColumns: ColumnDefinition[] = columns.map((col: any) => {
       return {
         ...col,
-        type: profile?.base_type ?? col.type,
-        semantic_type: profile?.semantic_type ?? col.semantic_type,
-        nullable,
-        unique_count: uniqueCount,
-        sample_values: sampleValues,
-        profile,
-      };
+        profile: undefined // Re-profile after cleaning
+      }
     });
 
-    const existingColumnNames = new Set(newColumns.map(col => col.name));
-    for (const [name, profile] of Object.entries(newColumnProfiles)) {
-      if (existingColumnNames.has(name)) continue;
-      const nullable = profile ? profile.null_count > 0 : false;
-      newColumns.push({
-        name,
-        type: profile?.base_type ?? 'string',
-        semantic_type: profile?.semantic_type,
-        nullable,
-        unique_count: profile?.unique_count,
-        sample_values: profile?.sample_values,
-        profile,
-      });
+    const reprofiled = profileColumns(result.cleanedData, { sampleSize: 500 });
+    for(const col of newColumns) {
+      if (reprofiled[col.name]) {
+        col.profile = reprofiled[col.name];
+      }
     }
+    const d = dataset as any;
+    const cleanedName = `${d.name} (${options.level} cleaned)`;
 
-    // Create new dataset with cleaned data
-    const cleanedName = `${dataset.name} (${options.level} cleaned)`;
-    
-    const datasetResult = await db.prepare(`
-      INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns, analysis_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).bind(
+    const insertResult = await db.prepare(
+      `INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(
       cleanedName,
-      dataset.original_filename,
-      dataset.file_type,
-      cleaningResult.cleanedRowCount,
+      d.original_filename,
+      d.file_type,
+      result.cleanedRowCount,
       newColumns.length,
-      JSON.stringify(newColumns),
-      'analyzing'
+      JSON.stringify(newColumns)
     ).run();
 
-    const newDatasetId = datasetResult.meta.last_row_id as number;
+    const newDatasetId = insertResult.meta.last_row_id as number;
 
-    // Insert cleaned data rows in batches
-    console.log(`Inserting ${cleaningResult.cleanedRowCount} cleaned rows...`);
+    console.log(`Inserting ${result.cleanedRowCount} cleaned rows...`);
     const batchSize = 100;
-    
-    for (let i = 0; i < cleaningResult.cleanedData.length; i += batchSize) {
-      const batch = cleaningResult.cleanedData.slice(i, i + batchSize);
-      const statements = batch.map((row, idx) => 
-        db.prepare(`
-          INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
-          VALUES (?, ?, ?, ?)
-        `).bind(newDatasetId, i + idx, JSON.stringify(row), 1)
+    for (let i = 0; i < result.cleanedData.length; i += batchSize) {
+      const batch = result.cleanedData.slice(i, i + batchSize);
+      const statements = batch.map((row: any, idx: number) =>
+        db.prepare(
+          `INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned) VALUES (?, ?, ?, 1)`
+        ).bind(newDatasetId, i + idx + 1, JSON.stringify(row))
       );
-      
       await db.batch(statements);
     }
 
-    console.log(`Cleaned dataset created with ID ${newDatasetId}`);
-
-    // Run analysis on cleaned dataset (async)
-    console.log('Starting analysis on cleaned dataset...');
-    await analyzeDataset(newDatasetId, cleaningResult.cleanedData, newColumns, db);
-
-    // Fetch analyses for visualization
-    const analysesResult = await db.prepare(`
-      SELECT * FROM analyses WHERE dataset_id = ?
-    `).bind(newDatasetId).all();
-
-    const analyses = analysesResult.results.map(a => ({
-      ...a,
-      result: JSON.parse(a.result as string)
-    })) as any[];
-
-    // Generate visualizations
-    await generateVisualizations(newDatasetId, cleaningResult.cleanedData, analyses, db);
-
-    // Update status
-    await db.prepare(`
-      UPDATE datasets SET analysis_status = ?, visualization_status = ?
-      WHERE id = ?
-    `).bind('complete', 'complete', newDatasetId).run();
+    (async () => {
+      await analyzeDataset(newDatasetId, result.cleanedData, newColumns, db);
+      const analysesResult = await db.prepare(`SELECT * FROM analyses WHERE dataset_id = ?`).bind(newDatasetId).all();
+      const analyses = analysesResult.results.map((a: any) => ({
+        ...a,
+        result: JSON.parse(a.result as string)
+      }));
+      await generateVisualizations(newDatasetId, result.cleanedData, analyses, db);
+    })();
 
     return c.json({
       success: true,
-      originalDatasetId: datasetId,
-      cleanedDatasetId: newDatasetId,
-      originalRowCount: cleaningResult.originalRowCount,
-      cleanedRowCount: cleaningResult.cleanedRowCount,
-      removedRowCount: cleaningResult.removedRowCount,
-      cleaningActions: cleaningResult.cleaningActions,
-      message: `Created cleaned dataset "${cleanedName}" with ${cleaningResult.cleanedRowCount} rows`
+      newDatasetId,
+      originalRowCount: result.originalRowCount,
+      cleanedRowCount: result.cleanedRowCount,
+      removedRowCount: result.removedRowCount,
+      cleaningActions: result.cleaningActions,
+      message: `Created cleaned dataset "${cleanedName}" with ${result.cleanedRowCount} rows`
     });
 
-  } catch (error: any) {
-    console.error('Data cleaning failed:', error);
-    return c.json({ error: error.message || 'Failed to clean data' }, 500);
+  } catch (err: any) {
+    console.error('Failed to clean dataset:', err.message, err.stack);
+    return c.json({ error: 'Failed to clean dataset' }, 500);
   }
 });
+
 
 export default clean;

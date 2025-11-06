@@ -1,8 +1,9 @@
 // CSV Parser using PapaParse with Streaming Support
 
 import Papa from 'papaparse';
+import type { ColumnDefinition } from '../types';
+import type { DatabaseBinding } from '../storage/types';
 import { profileColumns } from './column-profiler';
-import type { ColumnProfile } from '../types';
 
 export interface ParseOptions {
   maxRows?: number;
@@ -15,14 +16,15 @@ export interface ParseOptions {
  * but we process it in chunks to avoid blocking
  */
 export function parseCSV(content: string, options: ParseOptions = {}): Record<string, any>[] {
-  const { maxRows = 10000 } = options;
-  
+  const { maxRows } = options;
+
   const result = Papa.parse(content, {
     header: true,
     dynamicTyping: true,
     skipEmptyLines: true,
     transformHeader: (header) => header.trim(),
-    preview: maxRows // Limit rows to prevent memory issues
+    // When maxRows is provided, parse only that many rows; otherwise parse all
+    preview: typeof maxRows === 'number' ? maxRows : 0
   });
 
   if (result.errors.length > 0) {
@@ -54,7 +56,7 @@ export async function parseCSVChunked(
         try {
           // Add rows to current chunk
           currentChunk.push(...(results.data as Record<string, any>[]));
-          
+
           // When chunk reaches size, process it
           if (currentChunk.length >= chunkSize) {
             parser.pause();
@@ -123,4 +125,97 @@ export function validateCSV(content: string): { valid: boolean; error?: string }
   }
 
   return { valid: true };
+}
+
+export function inspectCsv(filePath: string): Promise<{ columnDefs: ColumnDefinition[], totalRows: number }> {
+    return new Promise((resolve, reject) => {
+        let rowCount = 0;
+        let columnDefs: ColumnDefinition[] = [];
+
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            step: (results, parser) => {
+                if (rowCount === 0) {
+                    columnDefs = results.meta.fields.map(f => ({
+                        name: f,
+                        type: 'string', // Default to string, will be refined by profiling
+                    }));
+                }
+                rowCount++;
+            },
+            complete: () => {
+                resolve({ columnDefs, totalRows: rowCount });
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export function profileCsv(filePath: string, columns: ColumnDefinition[]): Promise<Record<string, any>> {
+    return new Promise((resolve, reject) => {
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            complete: (results) => {
+                const profiles = profileColumns(results.data);
+                resolve(profiles);
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export function streamCsvToDb(db: DatabaseBinding, filePath: string, datasetId: number, chunkSize: number): Promise<void> {
+    let rows: any[] = [];
+    let rowCounter = 0;
+
+    return new Promise((resolve, reject) => {
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            chunk: async (results, parser) => {
+                parser.pause();
+                const batch = results.data;
+                const statements = batch.map((row, idx) =>
+                    db.prepare('INSERT INTO data_rows (dataset_id, row_number, data) VALUES (?, ?, ?)')
+                      .bind(datasetId, rowCounter + idx + 1, JSON.stringify(row))
+                );
+                await db.batch(statements);
+                rowCounter += batch.length;
+                parser.resume();
+            },
+            complete: () => {
+                resolve();
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export async function insertDataset(db: DatabaseBinding, name: string, type: string, rowCount: number, columns: ColumnDefinition[]): Promise<number> {
+    const result = await db.prepare(
+        `INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(
+        name,
+        name,
+        type,
+        rowCount,
+        columns.length,
+        JSON.stringify(columns)
+    ).run();
+
+    return result.meta.last_row_id as number;
 }

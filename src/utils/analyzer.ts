@@ -12,7 +12,7 @@ import {
 } from './statistics';
 import { scoreInsightQuality } from './quality-scorer';
 import { deriveFeatureSuggestions } from './feature-engineer';
-import type { ColumnDefinition, FeatureSuggestion } from '../types';
+import type { ColumnDefinition, FeatureSuggestion, ForensicSeverity } from '../types';
 import {
   describeAnomalies,
   describeCorrelation,
@@ -23,15 +23,52 @@ import {
   describeStatistics,
   describeTimeSeriesInsight,
   describeTrend,
+  describeClustering,
 } from './insight-writer';
+import type { DatabaseBinding } from '../storage/types';
+import { recordForensicEvent } from './forensics';
+import { findOptimalClusters } from './cluster-analysis';
 
 const MAX_CORRELATION_SAMPLE = 1500;
+
+function classifyMissingSeverity(percentage: number): ForensicSeverity {
+  if (percentage >= 50) return 'critical';
+  if (percentage >= 30) return 'high';
+  if (percentage >= 15) return 'medium';
+  if (percentage >= 5) return 'low';
+  return 'info';
+}
+
+function classifyOutlierSeverity(ratio: number): ForensicSeverity {
+  if (ratio >= 0.4) return 'high';
+  if (ratio >= 0.2) return 'medium';
+  if (ratio >= 0.1) return 'low';
+  return 'info';
+}
+
+function classifyTrendSeverity(strength: number): ForensicSeverity {
+  if (strength >= 0.75) return 'high';
+  if (strength >= 0.45) return 'medium';
+  if (strength >= 0.2) return 'low';
+  return 'info';
+}
+
+async function logForensicEvent(
+  db: DatabaseBinding,
+  input: Parameters<typeof recordForensicEvent>[1],
+): Promise<void> {
+  try {
+    await recordForensicEvent(db, input);
+  } catch (error) {
+    console.error('Failed to store forensic event:', error, input.eventType);
+  }
+}
 
 export async function analyzeDataset(
   datasetId: number,
   rows: Record<string, any>[],
   columns: ColumnDefinition[],
-  db: D1Database
+  db: DatabaseBinding
 ): Promise<void> {
   console.log(`Starting analysis for dataset ${datasetId}`);
 
@@ -48,7 +85,7 @@ export async function analyzeDataset(
         }
         return true;
       });
-    
+
     const stats = calculateStats(rawValues, col.type);
 
     // Store statistics analysis
@@ -102,6 +139,22 @@ export async function analyzeDataset(
         missingImportance,
         missingQuality.score
       ).run();
+
+      const missingSeverity = classifyMissingSeverity(missingPercentage);
+      if (missingSeverity !== 'info') {
+        await logForensicEvent(db, {
+          datasetId,
+          eventType: 'missing_spike',
+          severity: missingSeverity,
+          summary: `${missingPercentage.toFixed(1)}% missing values detected in ${col.name}`,
+          details: {
+            column: col.name,
+            missingCount: stats.nullCount,
+            totalCount: stats.count,
+            missingPercentage,
+          },
+        });
+      }
     }
 
     // 2. Outlier detection for numeric columns
@@ -123,7 +176,7 @@ export async function analyzeDataset(
           insight_actions: outlierDescription.actions ?? [],
         };
         const outlierQuality = scoreInsightQuality('outlier', col.name, outlierResult, stats);
-        
+
         await db.prepare(`
           INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -137,6 +190,23 @@ export async function analyzeDataset(
           outlierPercentage > 5 ? 'high' : 'medium',
           outlierQuality.score
         ).run();
+
+        const outlierRatio = numbers.length > 0 ? outliers.indices.length / numbers.length : 0;
+        const outlierSeverity = classifyOutlierSeverity(outlierRatio);
+        if (outlierSeverity !== 'info') {
+          await logForensicEvent(db, {
+            datasetId,
+            eventType: 'outlier_cluster',
+            severity: outlierSeverity,
+            summary: `${outliers.indices.length} potential outliers identified in ${col.name}`,
+            details: {
+              column: col.name,
+              outlierCount: outliers.indices.length,
+              ratio: outlierRatio,
+              sampleValues: outlierResult.values,
+            },
+          });
+        }
       }
 
       // 3. Trend detection for numeric columns
@@ -149,7 +219,7 @@ export async function analyzeDataset(
             insight_actions: trendDescription.actions ?? [],
           };
           const trendQuality = scoreInsightQuality('trend', col.name, trend, stats);
-          
+
           await db.prepare(`
             INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -163,6 +233,21 @@ export async function analyzeDataset(
             trend.strength > 0.5 ? 'high' : 'medium',
             trendQuality.score
           ).run();
+
+          const trendSeverity = classifyTrendSeverity(trend.strength);
+          if (trendSeverity !== 'info') {
+            await logForensicEvent(db, {
+              datasetId,
+              eventType: 'trend_shift',
+              severity: trendSeverity,
+              summary: `Detected ${trend.direction} trend in ${col.name}`,
+              details: {
+                column: col.name,
+                direction: trend.direction,
+                strength: trend.strength,
+              },
+            });
+          }
         }
       }
     }
@@ -321,17 +406,17 @@ export async function analyzeDataset(
 
   // 5. Time-series analysis for date/datetime columns
   const dateColumns = columns.filter(c => c.type === 'date' || c.type === 'datetime');
-  
+
   // For each date column, analyze with each numeric column
   for (const dateCol of dateColumns) {
     for (const numCol of numericColumns) {
       const dates = rows.map(r => r[dateCol.name]).filter(v => v);
       const values = rows.map(r => r[numCol.name]).filter(v => v !== null && v !== undefined);
-      
+
       if (dates.length !== values.length || dates.length < 5) continue;
-      
+
       const tsStats = analyzeTimeSeries(dates, values.map(v => Number(v)));
-      
+
       if (tsStats && (tsStats.trend.strength > 0.3 || tsStats.seasonality !== 'none')) {
         const timeseriesResult = {
           dateColumn: dateCol.name,
@@ -345,10 +430,10 @@ export async function analyzeDataset(
           ...timeseriesResult,
           insight_actions: timeseriesDescription.actions ?? [],
         };
-        
+
         const importance = tsStats.trend.strength > 0.6 || tsStats.seasonality !== 'none' ? 'high' : 'medium';
         const tsQuality = scoreInsightQuality('timeseries', numCol.name, timeseriesResult, { count: dates.length });
-        
+
         await db.prepare(`
           INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -380,9 +465,9 @@ export async function analyzeDataset(
           }
           return true;
         });
-      
+
       const frequency: Record<string, number> = {};
-      
+
       values.forEach(v => {
         frequency[v] = (frequency[v] || 0) + 1;
       });
@@ -414,7 +499,7 @@ export async function analyzeDataset(
           ...patternResult,
           insight_actions: patternDescription.actions ?? [],
         };
-        
+
         await db.prepare(`
           INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -464,6 +549,29 @@ export async function analyzeDataset(
         quality.score
       ).run();
     }
+  }
+
+  // 7. Cluster analysis
+  const clusteringResult = findOptimalClusters(rows, columns);
+  if (clusteringResult && clusteringResult.clusters.length > 0) {
+    const clusterDescription = describeClustering(clusteringResult);
+    const clusterPayload = {
+      ...clusteringResult,
+      insight_actions: clusterDescription.actions ?? [],
+    };
+    await db.prepare(`
+      INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      datasetId,
+      'clustering',
+      clusteringResult.columns.join(', '),
+      JSON.stringify(clusterPayload),
+      clusteringResult.elbowScore, // Confidence based on elbow score
+      clusterDescription.text,
+      'high',
+      75 // Default high score for now
+    ).run();
   }
 }
 

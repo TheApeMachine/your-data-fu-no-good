@@ -1,6 +1,7 @@
 import duckdb from 'duckdb';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import type { DatabaseBinding, PreparedStatement, QueryOptions, RunMeta } from './types';
 
@@ -73,9 +74,106 @@ export class DuckDBBinding implements DatabaseBinding {
       .filter((file) => file.endsWith('.sql'))
       .sort();
 
+    // Ensure migrations ledger exists
+    await this.execScript(
+      `CREATE TABLE IF NOT EXISTS _migrations (
+        filename TEXT PRIMARY KEY,
+        checksum TEXT,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )`
+    );
+
+    // Helpers to interact directly with the underlying DB during bootstrap
+    const run = (sql: string, ...params: any[]) =>
+      new Promise<void>((resolve, reject) => {
+        // Use raw connection since ready gate depends on migrations
+        (this.db as any).run(sql, ...params, (err: Error | null) => {
+          if (err) return reject(err);
+          resolve();
+        });
+      });
+    const all = <T = any>(sql: string, ...params: any[]) =>
+      new Promise<T[]>((resolve, reject) => {
+        (this.db as any).all(sql, ...params, (err: Error | null, rows?: T[]) => {
+          if (err) return reject(err);
+          resolve(rows ?? []);
+        });
+      });
+
+    // Preflight: ensure legacy tables have a primary key/unique on id for FK references
+    try {
+      const tableExists = async (name: string) => {
+        const rows = await all<{ x: number }>(
+          `SELECT 1 AS x FROM information_schema.tables WHERE lower(table_name) = lower(?) LIMIT 1`,
+          name,
+        );
+        return rows.length > 0;
+      };
+
+      const hasPkOnId = async (name: string) => {
+        // DuckDB accepts: PRAGMA table_info(table_name)
+        const cols = await all<{ name: string; pk: number }>(`PRAGMA table_info(${name})`);
+        return cols.some((c) => c.name === 'id' && Number(c.pk) > 0);
+      };
+
+      const ensureUniqueOnId = async (name: string) => {
+        // Create a unique index to satisfy FK requirement if PK is missing
+        await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${name}_id_unique ON ${name}(id)`);
+      };
+
+      // forensic_cases
+      if (await tableExists('forensic_cases')) {
+        if (!(await hasPkOnId('forensic_cases'))) {
+          await ensureUniqueOnId('forensic_cases');
+        }
+      }
+      // forensic_events
+      if (await tableExists('forensic_events')) {
+        if (!(await hasPkOnId('forensic_events'))) {
+          await ensureUniqueOnId('forensic_events');
+        }
+      }
+    } catch (preflightErr) {
+      console.warn('DuckDB migration preflight check failed (continuing):', preflightErr);
+    }
+
     for (const file of files) {
-      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
-      await this.execScript(sql);
+      const filePath = path.join(migrationsDir, file);
+      const sql = fs.readFileSync(filePath, 'utf-8');
+      const checksum = crypto.createHash('sha256').update(sql).digest('hex');
+
+      // Check if already applied
+      const existing = await all<{ checksum: string }>(
+        'SELECT checksum FROM _migrations WHERE filename = ?',
+        file,
+      );
+      if (existing.length > 0) {
+        if (existing[0].checksum !== checksum) {
+          console.warn(
+            `Migration ${file} has changed since it was applied. Skipping re-apply. (stored=${existing[0].checksum.slice(
+              0,
+              8,
+            )} current=${checksum.slice(0, 8)})`,
+          );
+        }
+        continue;
+      }
+
+      // Apply in a transaction
+      try {
+        await run('BEGIN TRANSACTION');
+        await this.execScript(sql);
+        await run('INSERT INTO _migrations (filename, checksum) VALUES (?, ?)', file, checksum);
+        await run('COMMIT');
+      } catch (err) {
+        try {
+          await run('ROLLBACK');
+        } catch (rollbackErr) {
+          console.warn('Rollback failed after migration error:', rollbackErr);
+        }
+        console.error('Failed to apply migration:', file, err);
+        throw err;
+      }
     }
   }
 
@@ -96,6 +194,7 @@ export class DuckDBBinding implements DatabaseBinding {
           new Promise<void>((resolve, reject) => {
             this.db.run(statement, (err: Error | null) => {
               if (err) {
+                console.error('DuckDB migration statement failed:', statement, err);
                 reject(err);
               } else {
                 resolve();

@@ -11,6 +11,19 @@ let bookmarkedInsights = new Set(); // Store bookmarked insight IDs
 let searchDebounceTimer = null; // Debounce timer for search
 let currentSessionId = null;
 let currentSessionSummary = null;
+let activeJoinPreviewModal = null;
+const sessionGridState = {
+    pageSize: 200,
+    offsets: new Map(),
+    totals: new Map(),
+    columns: new Map(),
+    specs: new Map(),
+    loading: false,
+};
+
+let currentForensicsOverview = null;
+let forensicsRequestToken = 0;
+let forensicsLoaded = false;
 
 // Load bookmarks from localStorage
 function loadBookmarks() {
@@ -35,6 +48,27 @@ const uploadSection = document.getElementById('upload-section');
 const resultsSection = document.getElementById('results-section');
 const datasetsSection = document.getElementById('datasets-section');
 const insightsContainer = document.getElementById('insights-container');
+const joinSuggestionsList = document.getElementById('session-join-suggestions');
+const sessionGridStatusEl = document.getElementById('session-grid-status');
+const sessionGridPrevBtn = document.getElementById('session-grid-prev');
+const sessionGridNextBtn = document.getElementById('session-grid-next');
+const sessionGridToolbar = document.getElementById('session-grid-toolbar');
+const sessionGridFilterColumn = document.getElementById('session-grid-filter-column');
+const sessionGridFilterOperator = document.getElementById('session-grid-filter-operator');
+const sessionGridFilterValue = document.getElementById('session-grid-filter-value');
+const sessionGridFilterApply = document.getElementById('session-grid-filter-apply');
+const sessionGridFilterClear = document.getElementById('session-grid-filter-clear');
+const sessionGridSortColumn = document.getElementById('session-grid-sort-column');
+const sessionGridSortDirection = document.getElementById('session-grid-sort-direction');
+const sessionGridSortApply = document.getElementById('session-grid-sort-apply');
+const sessionGridSortClear = document.getElementById('session-grid-sort-clear');
+const sessionGridDeriveAdd = document.getElementById('session-grid-derive-add');
+const sessionGridDeriveClear = document.getElementById('session-grid-derive-clear');
+const forensicsSummaryEl = document.getElementById('forensics-summary');
+const forensicsStatusEl = document.getElementById('forensics-status');
+const forensicsCaseListEl = document.getElementById('forensics-case-list');
+const forensicsSignalListEl = document.getElementById('forensics-signal-list');
+const forensicsLastUpdatedEl = document.getElementById('forensics-last-updated');
 window.pendingCleanerColumn = window.pendingCleanerColumn ?? null;
 
 if (insightsContainer) {
@@ -56,11 +90,102 @@ if (insightsContainer) {
     });
 }
 
+if (joinSuggestionsList) {
+    joinSuggestionsList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-join-action]');
+        if (!button) return;
+        const suggestionId = Number(button.dataset.suggestionId);
+        const action = button.dataset.joinAction;
+        if (!Number.isFinite(suggestionId) || !action) return;
+        handleJoinSuggestionAction(action, suggestionId);
+    });
+}
+
+if (forensicsCaseListEl) {
+    forensicsCaseListEl.addEventListener('click', (event) => {
+        const actionButton = event.target.closest('[data-forensics-action]');
+        if (!actionButton) return;
+        const type = actionButton.dataset.forensicsAction;
+        if (!type) return;
+        const column = actionButton.dataset.column || null;
+        const caseIdRaw = actionButton.dataset.caseId;
+        const caseId = caseIdRaw !== undefined ? Number(caseIdRaw) : null;
+        handleForensicsAction({ type, column, caseId: Number.isFinite(caseId) ? caseId : null });
+    });
+}
+
+if (forensicsSignalListEl) {
+    forensicsSignalListEl.addEventListener('click', (event) => {
+        const actionButton = event.target.closest('[data-forensics-action]');
+        if (!actionButton) return;
+        const type = actionButton.dataset.forensicsAction;
+        if (!type) return;
+        const column = actionButton.dataset.column || null;
+        handleForensicsAction({ type, column });
+    });
+}
+
 // Navigation
 document.getElementById('view-datasets').addEventListener('click', loadDatasets);
 document.getElementById('back-to-upload').addEventListener('click', () => {
     showSection('upload');
 });
+
+if (sessionGridPrevBtn) {
+    sessionGridPrevBtn.addEventListener('click', () => {
+        const datasetId = Number(sessionGridPrevBtn.dataset.datasetId ?? currentDatasetId);
+        changeSessionGridPage(datasetId, -1);
+    });
+}
+
+if (sessionGridNextBtn) {
+    sessionGridNextBtn.addEventListener('click', () => {
+        const datasetId = Number(sessionGridNextBtn.dataset.datasetId ?? currentDatasetId);
+        changeSessionGridPage(datasetId, 1);
+    });
+}
+
+if (sessionGridFilterApply) {
+    sessionGridFilterApply.addEventListener('click', () => {
+        const datasetId = Number(sessionGridFilterApply.dataset.datasetId ?? currentDatasetId);
+        applySessionGridFilter(datasetId);
+    });
+}
+
+if (sessionGridFilterClear) {
+    sessionGridFilterClear.addEventListener('click', () => {
+        const datasetId = Number(sessionGridFilterClear.dataset.datasetId ?? currentDatasetId);
+        clearSessionGridFilter(datasetId);
+    });
+}
+
+if (sessionGridSortApply) {
+    sessionGridSortApply.addEventListener('click', () => {
+        const datasetId = Number(sessionGridSortApply.dataset.datasetId ?? currentDatasetId);
+        applySessionGridSort(datasetId);
+    });
+}
+
+if (sessionGridSortClear) {
+    sessionGridSortClear.addEventListener('click', () => {
+        const datasetId = Number(sessionGridSortClear.dataset.datasetId ?? currentDatasetId);
+        clearSessionGridSort(datasetId);
+    });
+}
+
+if (sessionGridDeriveAdd) {
+    sessionGridDeriveAdd.addEventListener('click', () => {
+        const datasetId = Number(sessionGridDeriveAdd.dataset.datasetId ?? currentDatasetId);
+        createDerivedSessionColumn(datasetId);
+    });
+}
+
+if (sessionGridDeriveClear) {
+    sessionGridDeriveClear.addEventListener('click', () => {
+        const datasetId = Number(sessionGridDeriveClear.dataset.datasetId ?? currentDatasetId);
+        clearDerivedSessionColumns(datasetId);
+    });
+}
 
 // File upload handlers
 uploadArea.addEventListener('click', () => fileInput.click());
@@ -160,6 +285,7 @@ function formatFileSize(bytes) {
 
 // Load dataset results
 async function loadDatasetResults(datasetId) {
+    resetForensicsView();
     try {
         // Fetch dataset info
         const datasetResponse = await axios.get(`/api/datasets/${datasetId}`);
@@ -181,13 +307,17 @@ async function loadDatasetResults(datasetId) {
         displayDatasetInfo(dataset);
         displayVisualizations(visualizations);
         displayInsights(analyses);
-        displaySampleData(sample, dataset.columns);
+        displaySampleData();
 
         if (typeof loadTopics === 'function') {
             loadTopics(datasetId);
         }
 
         showSection('results');
+
+        if (forensicsSummaryEl) {
+            loadForensicsOverview(datasetId);
+        }
 
         if (window.sessionAPI) {
             try {
@@ -607,34 +737,8 @@ function displayInsights(analyses) {
 }
 
 // Display sample data
-function displaySampleData(sample, columns) {
-    const container = document.getElementById('sample-data');
-
-    if (sample.length === 0) {
-        container.innerHTML = '<p style="color: var(--text-secondary);">No data to display</p>';
-        return;
-    }
-
-    const headers = columns.map(col => col.name);
-
-    container.innerHTML = `
-        <div class="neu-card-inset rounded-lg p-4 overflow-x-auto">
-            <table class="min-w-full">
-                <thead>
-                    <tr>
-                        ${headers.map(h => `<th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider" style="color: var(--text-secondary);">${h}</th>`).join('')}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${sample.map((row, i) => `
-                        <tr class="${i % 2 === 0 ? '' : 'bg-opacity-50'}" style="background: ${i % 2 === 0 ? 'transparent' : 'var(--bg-secondary)'};">
-                            ${headers.map(h => `<td class="px-6 py-4 whitespace-nowrap text-sm" style="color: var(--text-primary);">${row[h] ?? 'null'}</td>`).join('')}
-                        </tr>
-                    `).join('')}
-                </tbody>
-            </table>
-        </div>
-    `;
+function displaySampleData() {
+    setSessionGridStatus('Preparing data canvas…');
 }
 
 // Load datasets list
@@ -1186,6 +1290,16 @@ async function runSessionQuery(sessionId, spec) {
     return response.data;
 }
 
+async function previewJoinSuggestionRequest(sessionId, suggestionId) {
+    const response = await axios.post(`/api/sessions/${sessionId}/join-suggestions/${suggestionId}/preview`);
+    return response.data;
+}
+
+async function applyJoinSuggestionRequest(sessionId, suggestionId) {
+    const response = await axios.post(`/api/sessions/${sessionId}/join-suggestions/${suggestionId}/apply`);
+    return response.data;
+}
+
 window.sessionAPI = {
     createSession,
     getSession,
@@ -1194,7 +1308,693 @@ window.sessionAPI = {
     getSessionDatasetColumns,
     getSessionDatasetRows,
     runSessionQuery,
+    previewJoinSuggestion: previewJoinSuggestionRequest,
+    applyJoinSuggestion: applyJoinSuggestionRequest,
 };
+
+function setSessionGridStatus(message, isError = false) {
+    const statusEl = sessionGridStatusEl || document.getElementById('session-grid-status');
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.style.color = isError ? '#ef4444' : 'var(--text-secondary)';
+}
+
+function collectColumnNames(columnInfo, spec) {
+    const names = new Set();
+    const base = columnInfo?.baseDefinitions || columnInfo?.definitions || [];
+    (base || []).forEach((col) => {
+        if (col && col.name) {
+            names.add(col.name);
+        }
+    });
+    if (spec && Array.isArray(spec.computed)) {
+        spec.computed.forEach((entry) => {
+            if (entry && entry.alias) {
+                names.add(entry.alias);
+            }
+        });
+    }
+    return names;
+}
+
+function refreshDerivedColumnDefinitions(datasetId, columnInfo, spec) {
+    if (!columnInfo) return columnInfo;
+    const baseDefinitions = columnInfo.baseDefinitions || columnInfo.definitions || [];
+    const allDefinitions = [...baseDefinitions];
+
+    if (spec && Array.isArray(spec.computed)) {
+        for (const entry of spec.computed) {
+            if (!entry || !entry.alias) continue;
+            const exists = allDefinitions.some((col) => col?.name === entry.alias);
+            if (!exists) {
+                allDefinitions.push({
+                    name: entry.alias,
+                    type: 'number',
+                    nullable: true,
+                    semantic_type: 'derived',
+                });
+            }
+        }
+    }
+
+    const updated = {
+        ...columnInfo,
+        baseDefinitions,
+        definitions: allDefinitions,
+    };
+    sessionGridState.columns.set(datasetId, updated);
+    return updated;
+}
+
+function buildComputedColumnSpec(datasetId, columnInfo, spec, alias, expression) {
+    const baseDefs = columnInfo?.baseDefinitions || columnInfo?.definitions || [];
+    const allowed = new Set();
+    (baseDefs || []).forEach((col) => {
+        if (col && col.name) {
+            allowed.add(col.name);
+        }
+    });
+    if (spec && Array.isArray(spec.computed)) {
+        spec.computed.forEach((entry) => {
+            if (entry && entry.alias) {
+                allowed.add(entry.alias);
+            }
+        });
+    }
+    if (allowed.has(alias)) {
+        throw new Error(`A column named "${alias}" already exists.`);
+    }
+
+    const compiled = compileDerivedExpression(expression, allowed);
+    return {
+        alias,
+        expression,
+        rpn: compiled.rpn,
+        usedColumns: Array.from(compiled.usedColumns),
+        type: 'number',
+    };
+}
+
+function ensureComputedSpecsPrepared(datasetId, spec, columnInfo) {
+    if (!spec) return [];
+    if (!Array.isArray(spec.computed)) {
+        spec.computed = [];
+    }
+
+    const prepared = [];
+    const baseDefs = columnInfo?.baseDefinitions || columnInfo?.definitions || [];
+    const baseAllowed = new Set();
+    (baseDefs || []).forEach((col) => {
+        if (col && col.name) {
+            baseAllowed.add(col.name);
+        }
+    });
+
+    for (const entry of spec.computed) {
+        if (!entry || !entry.alias || !entry.expression) {
+            continue;
+        }
+
+        const allowed = new Set(baseAllowed);
+        for (const existing of prepared) {
+            allowed.add(existing.alias);
+        }
+
+        if (!entry.rpn) {
+            const compiled = compileDerivedExpression(entry.expression, allowed);
+            entry.rpn = compiled.rpn;
+            entry.usedColumns = Array.from(compiled.usedColumns);
+        }
+
+        prepared.push(entry);
+        baseAllowed.add(entry.alias);
+    }
+
+    spec.computed = prepared;
+    sessionGridState.specs.set(datasetId, spec);
+    return prepared;
+}
+
+function compileDerivedExpression(expression, allowedColumns) {
+    if (typeof expression !== 'string') {
+        throw new Error('Expression must be a string.');
+    }
+    const trimmed = expression.trim();
+    if (!trimmed.length) {
+        throw new Error('Expression cannot be empty.');
+    }
+
+    const tokenPattern = /\s*({{[^}]+}}|\d*\.?\d+|[()+\-*/])\s*/g;
+    const rawTokens = [];
+    let lastIndex = 0;
+    let match;
+    while ((match = tokenPattern.exec(trimmed)) !== null) {
+        rawTokens.push(match[1]);
+        lastIndex = tokenPattern.lastIndex;
+    }
+
+    if (lastIndex !== trimmed.length) {
+        throw new Error('Only numbers, arithmetic operators, parentheses, and column placeholders like {{column}} are supported.');
+    }
+
+    const processed = [];
+    const usedColumns = new Set();
+
+    for (const token of rawTokens) {
+        if (token.startsWith('{{') && token.endsWith('}}')) {
+            const columnName = token.slice(2, -2).trim();
+            if (!columnName) {
+                throw new Error('Column placeholder cannot be empty.');
+            }
+            if (!allowedColumns.has(columnName)) {
+                throw new Error(`Unknown column reference: ${columnName}`);
+            }
+            processed.push({ kind: 'column', name: columnName });
+            usedColumns.add(columnName);
+            continue;
+        }
+
+        if (/^\d*\.?\d+$/.test(token)) {
+            processed.push({ kind: 'number', value: Number(token) });
+            continue;
+        }
+
+        if (token === '+' || token === '-' || token === '*' || token === '/') {
+            processed.push({ kind: 'operator', op: token });
+            continue;
+        }
+
+        if (token === '(' || token === ')') {
+            processed.push({ kind: 'paren', value: token });
+            continue;
+        }
+
+        throw new Error(`Unsupported token: ${token}`);
+    }
+
+    if (processed.length === 0) {
+        throw new Error('Expression must include at least one term.');
+    }
+
+    const normalized = [];
+    for (let i = 0; i < processed.length; i++) {
+        const token = processed[i];
+        if (token.kind === 'operator' && (token.op === '+' || token.op === '-')) {
+            const prev = normalized[normalized.length - 1];
+            if (!prev || prev.kind === 'operator' || (prev.kind === 'paren' && prev.value === '(')) {
+                normalized.push({ kind: 'number', value: 0 });
+            }
+        }
+        normalized.push(token);
+    }
+
+    const precedence = { '+': 1, '-': 1, '*': 2, '/': 2 };
+    const output = [];
+    const stack = [];
+
+    for (const token of normalized) {
+        if (token.kind === 'number' || token.kind === 'column') {
+            output.push(token);
+            continue;
+        }
+
+        if (token.kind === 'operator') {
+            while (stack.length) {
+                const top = stack[stack.length - 1];
+                if (top.kind === 'operator' && precedence[top.op] >= precedence[token.op]) {
+                    output.push(stack.pop());
+                } else {
+                    break;
+                }
+            }
+            stack.push(token);
+            continue;
+        }
+
+        if (token.kind === 'paren') {
+            if (token.value === '(') {
+                stack.push(token);
+            } else {
+                let matched = false;
+                while (stack.length) {
+                    const popped = stack.pop();
+                    if (popped.kind === 'paren' && popped.value === '(') {
+                        matched = true;
+                        break;
+                    }
+                    output.push(popped);
+                }
+                if (!matched) {
+                    throw new Error('Mismatched parentheses in expression.');
+                }
+            }
+        }
+    }
+
+    while (stack.length) {
+        const popped = stack.pop();
+        if (popped.kind === 'paren') {
+            throw new Error('Mismatched parentheses in expression.');
+        }
+        output.push(popped);
+    }
+
+    if (usedColumns.size === 0) {
+        throw new Error('Expression must reference at least one column.');
+    }
+
+    return { rpn: output, usedColumns };
+}
+
+function evaluateDerivedExpression(rpnTokens, rowData) {
+    const stack = [];
+    for (const token of rpnTokens) {
+        if (token.kind === 'number') {
+            stack.push(token.value);
+            continue;
+        }
+
+        if (token.kind === 'column') {
+            const raw = rowData ? rowData[token.name] : undefined;
+            if (raw === null || raw === undefined || raw === '') {
+                stack.push(null);
+                continue;
+            }
+            const numeric = Number(raw);
+            stack.push(Number.isFinite(numeric) ? numeric : null);
+            continue;
+        }
+
+        if (token.kind === 'operator') {
+            if (stack.length < 2) {
+                return null;
+            }
+            const right = stack.pop();
+            const left = stack.pop();
+            if (left === null || right === null) {
+                stack.push(null);
+                continue;
+            }
+            let result = null;
+            switch (token.op) {
+                case '+':
+                    result = left + right;
+                    break;
+                case '-':
+                    result = left - right;
+                    break;
+                case '*':
+                    result = left * right;
+                    break;
+                case '/':
+                    result = right === 0 ? null : left / right;
+                    break;
+                default:
+                    return null;
+            }
+            stack.push(Number.isFinite(result) ? result : (result === 0 ? 0 : null));
+        }
+    }
+
+    if (stack.length !== 1) {
+        return null;
+    }
+
+    const finalValue = stack[0];
+    if (finalValue === null) {
+        return null;
+    }
+    return Number.isFinite(finalValue) ? finalValue : (finalValue === 0 ? 0 : null);
+}
+
+function applyComputedColumnsToRows(rows, computedSpecs) {
+    if (!Array.isArray(rows) || rows.length === 0) return rows;
+    for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const data = row.data && typeof row.data === 'object' ? row.data : {};
+        for (const spec of computedSpecs) {
+            if (!spec || !spec.alias || !Array.isArray(spec.rpn)) continue;
+            const value = evaluateDerivedExpression(spec.rpn, data);
+            data[spec.alias] = value === undefined ? null : value;
+        }
+        row.data = data;
+    }
+    return rows;
+}
+
+function changeSessionGridPage(datasetId, direction) {
+    if (!Number.isFinite(datasetId) || !datasetId || sessionGridState.loading) return;
+    const currentOffset = sessionGridState.offsets.get(datasetId) ?? 0;
+    const newOffset = Math.max(0, currentOffset + direction * sessionGridState.pageSize);
+    if (newOffset === currentOffset) return;
+    loadSessionDatasetGrid(datasetId, { offset: newOffset });
+}
+
+async function loadSessionDatasetGrid(datasetId, options = {}) {
+    if (!window.sessionAPI || !currentSessionId || !Number.isFinite(datasetId)) {
+        setSessionGridStatus('Data canvas becomes available once the workspace session is ready.');
+        return;
+    }
+
+    const offset = Math.max(0, Math.floor(options.offset ?? sessionGridState.offsets.get(datasetId) ?? 0));
+    const pageSize = sessionGridState.pageSize;
+
+    try {
+        sessionGridState.loading = true;
+        setSessionGridStatus('Loading data…');
+
+        let columnInfo = sessionGridState.columns.get(datasetId);
+        if (!columnInfo) {
+            const columnResponse = await window.sessionAPI.getSessionDatasetColumns(currentSessionId, datasetId);
+            const columnDefs = Array.isArray(columnResponse.columns) ? columnResponse.columns : [];
+            const columnNames = columnDefs.map((col) => col.name).filter(Boolean);
+            columnInfo = {
+                baseDefinitions: columnDefs,
+                definitions: columnDefs,
+                baseNames: columnNames,
+                names: columnNames,
+                rowCount: Number(columnResponse.row_count ?? 0),
+            };
+            sessionGridState.columns.set(datasetId, columnInfo);
+            sessionGridState.totals.set(datasetId, columnInfo.rowCount);
+            populateSessionGridToolbar(datasetId, columnDefs);
+        }
+
+        const spec = ensureDatasetSpec(datasetId);
+        columnInfo = refreshDerivedColumnDefinitions(datasetId, columnInfo, spec);
+        const computedSpecs = ensureComputedSpecsPrepared(datasetId, spec, columnInfo);
+
+        const selectColumns = (columnInfo.baseNames && columnInfo.baseNames.length
+            ? columnInfo.baseNames
+            : (columnInfo.names || []));
+
+        const querySpec = {
+            dataset_id: datasetId,
+            columns: selectColumns,
+            limit: pageSize,
+            offset,
+            filters: spec.filters ?? [],
+            order_by: spec.order_by ?? [],
+        };
+
+        const queryResult = await window.sessionAPI.runSessionQuery(currentSessionId, querySpec);
+        const rows = Array.isArray(queryResult?.rows) ? queryResult.rows : [];
+        const totalRows = Number(queryResult?.meta?.total_rows ?? sessionGridState.totals.get(datasetId) ?? columnInfo.rowCount ?? 0);
+
+        if (computedSpecs.length > 0 && rows.length > 0) {
+            applyComputedColumnsToRows(rows, computedSpecs);
+        }
+
+        sessionGridState.offsets.set(datasetId, offset);
+        sessionGridState.totals.set(datasetId, totalRows);
+
+        renderSessionGrid(datasetId, columnInfo.definitions, rows, offset, totalRows);
+        updateSessionGridPagination(datasetId, offset, totalRows, rows.length);
+
+        if (totalRows > 0) {
+            const start = offset + 1;
+            const end = Math.min(totalRows, offset + rows.length);
+            setSessionGridStatus(`Displaying ${start.toLocaleString()} – ${end.toLocaleString()} of ${totalRows.toLocaleString()} rows`);
+        } else {
+            setSessionGridStatus('No rows available for this dataset.');
+        }
+    } catch (error) {
+        console.error('Session grid load error:', error);
+        const message = error?.response?.data?.error || error.message || 'Failed to load grid data';
+        setSessionGridStatus(message, true);
+    } finally {
+        sessionGridState.loading = false;
+    }
+}
+
+function renderSessionGrid(datasetId, columnDefs, rows, offset, totalRows) {
+    const container = document.getElementById('session-grid-container');
+    if (!container) return;
+
+    if (!columnDefs || !columnDefs.length) {
+        if (sessionGridToolbar) sessionGridToolbar.classList.add('hidden');
+        container.innerHTML = '<p class="text-sm" style="color: var(--text-secondary);">No columns detected for this dataset.</p>';
+        updateSessionGridPagination(datasetId, offset, totalRows, rows.length);
+        return;
+    }
+
+    populateSessionGridToolbar(datasetId, columnDefs);
+
+    const columnNames = columnDefs.map((col) => col.name);
+    const headerHtml = ['<th class="px-3 py-2 text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Row</th>']
+        .concat(columnDefs.map((col) => `<th class="px-3 py-2 text-xs uppercase tracking-wide" style="color: var(--text-secondary);">${escapeHtml(col.name || '')}</th>`))
+        .join('');
+
+    const bodyHtml = rows
+        .map((row) => {
+            const cells = columnNames
+                .map((name) => `<td class="px-3 py-2 text-sm" style="color: var(--text-primary);">${formatCellValue(row.data?.[name])}</td>`)
+                .join('');
+            return `<tr class="border-b border-gray-200/40"><td class="px-3 py-2 text-sm" style="color: var(--text-secondary);">#${(Number(row.row_number ?? 0) + 1).toLocaleString()}</td>${cells}</tr>`;
+        })
+        .join('');
+
+    container.innerHTML = `
+        <table class="min-w-full border-collapse">
+            <thead>
+                <tr>${headerHtml}</tr>
+            </thead>
+            <tbody>${bodyHtml || '<tr><td colspan="' + (columnNames.length + 1) + '" class="px-3 py-6 text-sm text-center" style="color: var(--text-secondary);">No rows in this page.</td></tr>'}</tbody>
+        </table>
+    `;
+
+    updateSessionGridPagination(datasetId, offset, totalRows, rows.length);
+}
+
+function updateSessionGridPagination(datasetId, offset, totalRows, rowCount) {
+    const pagination = document.getElementById('session-grid-pagination');
+    if (!pagination) return;
+
+    const pageInfo = document.getElementById('session-grid-pageinfo');
+    const prevBtn = sessionGridPrevBtn || document.getElementById('session-grid-prev');
+    const nextBtn = sessionGridNextBtn || document.getElementById('session-grid-next');
+    const pageSize = sessionGridState.pageSize;
+
+    if (!totalRows || totalRows <= pageSize) {
+        pagination.classList.add('hidden');
+        if (pageInfo) pageInfo.textContent = '';
+        if (prevBtn) prevBtn.disabled = true;
+        if (nextBtn) nextBtn.disabled = true;
+        return;
+    }
+
+    pagination.classList.remove('hidden');
+    const start = offset + 1;
+    const end = Math.min(totalRows, offset + rowCount);
+    if (pageInfo) {
+        pageInfo.textContent = `${start.toLocaleString()} – ${end.toLocaleString()} of ${totalRows.toLocaleString()}`;
+    }
+    if (prevBtn) {
+        prevBtn.disabled = offset <= 0;
+        prevBtn.dataset.datasetId = String(datasetId);
+    }
+    if (nextBtn) {
+        nextBtn.disabled = offset + pageSize >= totalRows;
+        nextBtn.dataset.datasetId = String(datasetId);
+    }
+}
+
+window.loadSessionDatasetGrid = loadSessionDatasetGrid;
+
+function populateSessionGridToolbar(datasetId, columnDefs) {
+    if (!sessionGridToolbar) return;
+    sessionGridToolbar.classList.remove('hidden');
+
+    let sourceColumns = columnDefs;
+    if (!sourceColumns || !sourceColumns.length) {
+        const info = sessionGridState.columns.get(datasetId);
+        if (info) {
+            sourceColumns = info.baseDefinitions || info.definitions || [];
+        }
+    }
+
+    const columnNames = (sourceColumns || []).map((col) => col.name).filter(Boolean);
+    const encodedNames = columnNames.map((name) => ({ raw: name, encoded: encodeURIComponent(name) }));
+
+    const buildOptions = (selectEl, selectedName) => {
+        if (!selectEl) return;
+        const currentValue = selectedName ? encodeURIComponent(selectedName) : selectEl.value;
+        selectEl.innerHTML = encodedNames
+            .map(({ raw, encoded }) => `<option value="${encoded}">${escapeHtml(raw)}</option>`)
+            .join('');
+        if (currentValue && encodedNames.some(({ encoded }) => encoded === currentValue)) {
+            selectEl.value = currentValue;
+        }
+    };
+
+    const spec = ensureDatasetSpec(datasetId);
+    const currentFilterColumn = spec.filters && spec.filters[0]?.column;
+    const currentSortColumn = spec.order_by && spec.order_by[0]?.column;
+
+    buildOptions(sessionGridFilterColumn, currentFilterColumn);
+    buildOptions(sessionGridSortColumn, currentSortColumn);
+
+    const toolbarElements = [
+        sessionGridFilterApply,
+        sessionGridFilterClear,
+        sessionGridSortApply,
+        sessionGridSortClear,
+        sessionGridDeriveAdd,
+        sessionGridDeriveClear,
+    ];
+    toolbarElements.forEach((el) => {
+        if (el) {
+            el.dataset.datasetId = String(datasetId);
+        }
+    });
+    if (sessionGridFilterColumn) sessionGridFilterColumn.dataset.datasetId = String(datasetId);
+    if (sessionGridFilterOperator) sessionGridFilterOperator.dataset.datasetId = String(datasetId);
+    if (sessionGridFilterValue) sessionGridFilterValue.dataset.datasetId = String(datasetId);
+    if (sessionGridSortColumn) sessionGridSortColumn.dataset.datasetId = String(datasetId);
+    if (sessionGridSortDirection) sessionGridSortDirection.dataset.datasetId = String(datasetId);
+}
+
+function ensureDatasetSpec(datasetId) {
+    if (!sessionGridState.specs.has(datasetId)) {
+        sessionGridState.specs.set(datasetId, { filters: [], order_by: [], computed: [] });
+    }
+    const spec = sessionGridState.specs.get(datasetId);
+    if (!spec.computed) {
+        spec.computed = [];
+    }
+    return spec;
+}
+
+function applySessionGridFilter(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    const column = sessionGridFilterColumn ? decodeURIComponent(sessionGridFilterColumn.value || '') : '';
+    const operator = sessionGridFilterOperator ? sessionGridFilterOperator.value || '=' : '=';
+    const value = sessionGridFilterValue ? sessionGridFilterValue.value : '';
+
+    const spec = ensureDatasetSpec(datasetId);
+    const filters = spec.filters ? [...spec.filters] : [];
+
+    if (!column || !operator || value === undefined || value === null || value === '') {
+        spec.filters = [];
+    } else {
+        spec.filters = [
+            {
+                column,
+                operator,
+                value,
+            },
+        ];
+    }
+
+    sessionGridState.specs.set(datasetId, spec);
+    loadSessionDatasetGrid(datasetId, { offset: 0 });
+}
+
+function clearSessionGridFilter(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    if (sessionGridFilterValue) sessionGridFilterValue.value = '';
+    const spec = ensureDatasetSpec(datasetId);
+    spec.filters = [];
+    sessionGridState.specs.set(datasetId, spec);
+    loadSessionDatasetGrid(datasetId, { offset: 0 });
+}
+
+function applySessionGridSort(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    const column = sessionGridSortColumn ? decodeURIComponent(sessionGridSortColumn.value || '') : '';
+    const direction = sessionGridSortDirection ? sessionGridSortDirection.value || 'asc' : 'asc';
+
+    const spec = ensureDatasetSpec(datasetId);
+    if (!column) {
+        spec.order_by = [];
+    } else {
+        spec.order_by = [
+            {
+                column,
+                direction,
+            },
+        ];
+    }
+
+    sessionGridState.specs.set(datasetId, spec);
+    loadSessionDatasetGrid(datasetId, { offset: 0 });
+}
+
+function clearSessionGridSort(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    const spec = ensureDatasetSpec(datasetId);
+    spec.order_by = [];
+    sessionGridState.specs.set(datasetId, spec);
+    loadSessionDatasetGrid(datasetId, { offset: 0 });
+}
+
+function createDerivedSessionColumn(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    const columnInfo = sessionGridState.columns.get(datasetId);
+    if (!columnInfo) {
+        setSessionGridStatus('Load the dataset before deriving new columns.', false);
+        return;
+    }
+
+    const spec = ensureDatasetSpec(datasetId);
+    const existingNames = collectColumnNames(columnInfo, spec);
+
+    const rawAlias = prompt('Name for the derived column (e.g. revenue_margin):');
+    if (rawAlias === null) return;
+    const alias = rawAlias.trim();
+    if (!alias) {
+        alert('Derived column name is required.');
+        return;
+    }
+    if (existingNames.has(alias)) {
+        alert(`A column named "${alias}" already exists.`);
+        return;
+    }
+    if (alias.length > 80) {
+        alert('Please choose a shorter name (80 characters max).');
+        return;
+    }
+
+    const rawExpression = prompt('Expression using +, -, *, / and column references like {{sales_revenue}}:', '({{sales_revenue}} - {{sales_gross_margin}})');
+    if (rawExpression === null) return;
+    const expression = rawExpression.trim();
+    if (!expression) {
+        alert('Expression is required to derive a column.');
+        return;
+    }
+
+    try {
+        const computedSpec = buildComputedColumnSpec(datasetId, columnInfo, spec, alias, expression);
+        spec.computed.push(computedSpec);
+        sessionGridState.specs.set(datasetId, spec);
+        refreshDerivedColumnDefinitions(datasetId, columnInfo, spec);
+        loadSessionDatasetGrid(datasetId, { offset: 0 });
+    } catch (error) {
+        console.error('Failed to create derived column:', error);
+        const message = error?.message ? String(error.message) : 'Unable to create derived column.';
+        alert(message);
+    }
+}
+
+function clearDerivedSessionColumns(datasetId) {
+    if (!Number.isFinite(datasetId) || !datasetId) return;
+    const spec = ensureDatasetSpec(datasetId);
+    if (!spec.computed || spec.computed.length === 0) return;
+
+    spec.computed = [];
+    sessionGridState.specs.set(datasetId, spec);
+
+    const columnInfo = sessionGridState.columns.get(datasetId);
+    if (columnInfo) {
+        const baseDefinitions = columnInfo.baseDefinitions || columnInfo.definitions || [];
+        sessionGridState.columns.set(datasetId, {
+            ...columnInfo,
+            definitions: [...baseDefinitions],
+        });
+    }
+
+    loadSessionDatasetGrid(datasetId, { offset: 0 });
+}
 
 async function ensureSessionForDataset(dataset) {
     if (!window.sessionAPI || !dataset || !dataset.id) return;
@@ -1231,6 +2031,10 @@ async function ensureSessionForDataset(dataset) {
         window.currentSessionSummary = summary;
         renderSessionPanel(summary);
 
+        if (dataset?.id) {
+            loadSessionDatasetGrid(dataset.id);
+        }
+
         setTimeout(() => {
             refreshSessionPanel().catch((err) => console.error('Session refresh failed:', err));
         }, 600);
@@ -1248,6 +2052,9 @@ async function refreshSessionPanel() {
         currentSessionSummary = summary;
         window.currentSessionSummary = summary;
         renderSessionPanel(summary);
+        if (currentDatasetId) {
+            loadSessionDatasetGrid(currentDatasetId);
+        }
     } catch (error) {
         console.error('Failed to refresh session panel:', error);
     }
@@ -1335,15 +2142,25 @@ function renderSessionPanel(summary) {
         const confidence = Math.round((suggestion.confidence ?? 0) * 100);
         return `
             <div class="p-3 neu-card-inset rounded-lg" style="background: var(--bg-primary);">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="text-sm" style="color: var(--text-primary);">
-                        <span class="font-semibold">${escapeHtml(leftAlias)}</span>
-                        <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(leftCol || '')}</span>
-                        <span style="color: var(--text-secondary);"> ↔ </span>
-                        <span class="font-semibold">${escapeHtml(rightAlias)}</span>
-                        <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(rightCol || '')}</span>
+                <div class="flex flex-col gap-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="text-sm" style="color: var(--text-primary);">
+                            <span class="font-semibold">${escapeHtml(leftAlias)}</span>
+                            <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(leftCol || '')}</span>
+                            <span style="color: var(--text-secondary);"> ↔ </span>
+                            <span class="font-semibold">${escapeHtml(rightAlias)}</span>
+                            <span class="text-xs" style="color: var(--text-secondary);">.${escapeHtml(rightCol || '')}</span>
+                        </div>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs" style="background: rgba(245, 158, 11, 0.15); color: #b45309;">${confidence}% match</span>
                     </div>
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs" style="background: rgba(245, 158, 11, 0.15); color: #b45309;">${confidence}% match</span>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button class="neu-button px-3 py-2 text-xs" data-join-action="preview" data-suggestion-id="${suggestion.id}">
+                            <i class="fas fa-eye mr-1"></i>Preview
+                        </button>
+                        <button class="neu-button px-3 py-2 text-xs" data-join-action="apply" data-suggestion-id="${suggestion.id}">
+                            <i class="fas fa-link mr-1"></i>Apply
+                        </button>
+                    </div>
                 </div>
             </div>
         `;
@@ -1351,6 +2168,128 @@ function renderSessionPanel(summary) {
 }
 
 window.refreshSessionPanel = refreshSessionPanel;
+
+async function handleJoinSuggestionAction(action, suggestionId) {
+    if (action === 'preview') {
+        await previewJoinSuggestionModal(suggestionId);
+        return;
+    }
+    if (action === 'apply') {
+        await applyJoinSuggestionToSession(suggestionId);
+    }
+}
+
+async function previewJoinSuggestionModal(suggestionId) {
+    if (!window.sessionAPI || !currentSessionId) return;
+    try {
+        setSessionGridStatus('Building join preview…');
+        const response = await window.sessionAPI.previewJoinSuggestion(currentSessionId, suggestionId);
+        if (response && response.preview) {
+            showJoinPreviewModal(response);
+            setSessionGridStatus('Join preview ready.');
+        } else {
+            alert('No preview available for this suggestion.');
+            setSessionGridStatus('Join preview unavailable.', true);
+        }
+    } catch (error) {
+        console.error('Join preview failed:', error);
+        const message = error?.response?.data?.error || error.message || 'Failed to build join preview.';
+        setSessionGridStatus(message, true);
+        alert(message);
+    }
+}
+
+function showJoinPreviewModal(payload) {
+    if (activeJoinPreviewModal) {
+        activeJoinPreviewModal.remove();
+        activeJoinPreviewModal = null;
+    }
+
+    const suggestion = payload?.suggestion || {};
+    const preview = payload?.preview || {};
+    const columns = Array.isArray(preview.columns) ? preview.columns : [];
+    const rows = Array.isArray(preview.rows) ? preview.rows : [];
+    const totalRows = Number(preview.total_rows ?? rows.length);
+    const leftLabel = suggestion.left_label || `Dataset ${suggestion.left_dataset_id}`;
+    const rightLabel = suggestion.right_label || `Dataset ${suggestion.right_dataset_id}`;
+    const title = `${escapeHtml(leftLabel)} ⋈ ${escapeHtml(rightLabel)}`;
+
+    const headerCells = columns
+        .map((col) => `<th class="px-3 py-2 text-xs uppercase tracking-wide" style="color: var(--text-secondary);">${escapeHtml(col?.name || '')}</th>`)
+        .join('');
+
+    const bodyRows = rows.length
+        ? rows.map((row, index) => {
+            const cells = columns
+                .map((col) => `<td class="px-3 py-2 text-sm" style="color: var(--text-primary);">${formatCellValue(row?.[col?.name])}</td>`)
+                .join('');
+            return `<tr class="border-b border-gray-200/40"><td class="px-3 py-2 text-sm" style="color: var(--text-secondary);">#${(index + 1).toLocaleString()}</td>${cells}</tr>`;
+        }).join('')
+        : `<tr><td colspan="${columns.length + 1}" class="px-3 py-6 text-sm text-center" style="color: var(--text-secondary);">No matching rows found for this join.</td></tr>`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'insight-modal-overlay';
+    overlay.innerHTML = `
+        <div class="neu-card" style="position: relative; max-width: 960px; width: 100%; max-height: 80vh; overflow: hidden; padding: 1.75rem;">
+            <button type="button" class="join-preview-close neu-button" style="position: absolute; top: 1rem; right: 1rem;">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3 class="text-lg font-semibold mb-2" style="color: var(--text-primary);">${title}</h3>
+            <p class="text-sm mb-3" style="color: var(--text-secondary);">
+                Joining <strong>${escapeHtml(leftLabel)}</strong> (${escapeHtml(suggestion.left_column || '')}) with <strong>${escapeHtml(rightLabel)}</strong> (${escapeHtml(suggestion.right_column || '')}).
+            </p>
+            <p class="text-xs mb-4" style="color: var(--text-secondary);">Previewing up to ${preview.row_limit || 25} rows • Matches: ${totalRows.toLocaleString()}</p>
+            <div style="max-height: 60vh; overflow: auto;">
+                <table class="min-w-full border-collapse">
+                    <thead>
+                        <tr>
+                            <th class="px-3 py-2 text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Row</th>
+                            ${headerCells}
+                        </tr>
+                    </thead>
+                    <tbody>${bodyRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay || event.target.closest('.join-preview-close')) {
+            overlay.remove();
+            activeJoinPreviewModal = null;
+        }
+    });
+
+    document.body.appendChild(overlay);
+    activeJoinPreviewModal = overlay;
+}
+
+async function applyJoinSuggestionToSession(suggestionId) {
+    if (!window.sessionAPI || !currentSessionId) return;
+    try {
+        setSessionGridStatus('Creating joined dataset…');
+        const response = await window.sessionAPI.applyJoinSuggestion(currentSessionId, suggestionId);
+        if (response?.summary) {
+            currentSessionSummary = response.summary;
+            window.currentSessionSummary = response.summary;
+            renderSessionPanel(response.summary);
+        } else {
+            await refreshSessionPanel();
+        }
+
+        if (response?.dataset_id) {
+            currentDatasetId = response.dataset_id;
+            await loadSessionDatasetGrid(response.dataset_id, { offset: 0 });
+        }
+
+        setSessionGridStatus('Join dataset created.');
+    } catch (error) {
+        console.error('Join apply failed:', error);
+        const message = error?.response?.data?.error || error.message || 'Failed to create joined dataset.';
+        setSessionGridStatus(message, true);
+        alert(message);
+    }
+}
 
 function getImportanceBg(importance) {
     const colors = {
@@ -1368,4 +2307,382 @@ function getImportanceText(importance) {
         low: '#10b981'
     };
     return colors[importance] || '#9ca3af';
+}
+
+function resetUpload() {
+    uploadPrompt.classList.remove('hidden');
+    uploadProgress.classList.add('hidden');
+    fileInput.value = '';
+}
+
+const FORENSICS_SEVERITY_ORDER = ['critical', 'high', 'medium', 'low', 'info'];
+const FORENSICS_SEVERITY_LABELS = {
+    critical: 'Critical',
+    high: 'High',
+    medium: 'Medium',
+    low: 'Low',
+    info: 'Info',
+};
+const FORENSICS_SEVERITY_STYLES = {
+    critical: { accent: '#ef4444', background: 'rgba(239, 68, 68, 0.12)', pillText: '#ffffff' },
+    high: { accent: '#f97316', background: 'rgba(249, 115, 22, 0.12)', pillText: '#ffffff' },
+    medium: { accent: '#f59e0b', background: 'rgba(245, 158, 11, 0.12)', pillText: '#1f2937' },
+    low: { accent: '#0ea5e9', background: 'rgba(14, 165, 233, 0.12)', pillText: '#0f172a' },
+    info: { accent: '#64748b', background: 'rgba(100, 116, 139, 0.12)', pillText: '#f8fafc' },
+};
+
+function resetForensicsView() {
+    currentForensicsOverview = null;
+    forensicsLoaded = false;
+    forensicsRequestToken += 1;
+    if (forensicsSummaryEl) {
+        forensicsSummaryEl.innerHTML = '';
+    }
+    if (forensicsCaseListEl) {
+        forensicsCaseListEl.innerHTML = '';
+    }
+    if (forensicsSignalListEl) {
+        forensicsSignalListEl.innerHTML = '';
+    }
+    if (forensicsStatusEl) {
+        forensicsStatusEl.innerHTML = '';
+        forensicsStatusEl.classList.add('hidden');
+    }
+    if (forensicsLastUpdatedEl) {
+        forensicsLastUpdatedEl.textContent = '';
+        forensicsLastUpdatedEl.classList.add('hidden');
+    }
+}
+
+function getForensicsSeverityStyle(severity) {
+    return FORENSICS_SEVERITY_STYLES[severity] || FORENSICS_SEVERITY_STYLES.info;
+}
+
+async function loadForensicsOverview(datasetId) {
+    if (!forensicsSummaryEl || !forensicsStatusEl) return;
+    forensicsLoaded = false;
+    currentForensicsOverview = null;
+    const requestId = ++forensicsRequestToken;
+    forensicsStatusEl.classList.remove('hidden');
+    forensicsStatusEl.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Scanning for data quality signals...';
+
+    try {
+        const response = await axios.get(`/api/forensics/datasets/${datasetId}`);
+        if (requestId !== forensicsRequestToken) return;
+        currentForensicsOverview = response.data;
+        renderForensicsOverview(response.data);
+        forensicsLoaded = true;
+    } catch (error) {
+        if (requestId !== forensicsRequestToken) return;
+        console.error('Failed to load forensics overview:', error);
+        const message = error.response?.data?.error || error.message || 'Unable to fetch forensic insights.';
+        forensicsStatusEl.classList.remove('hidden');
+        forensicsStatusEl.innerHTML = `<span style="color: #ef4444;">${escapeHtml(message)}</span>`;
+    }
+}
+
+function renderForensicsOverview(data) {
+    if (!forensicsSummaryEl) return;
+    renderForensicsSummary(data);
+    renderForensicsCases(data?.cases || {});
+    renderForensicsSignals(Array.isArray(data?.groups) ? data.groups : []);
+    if (forensicsStatusEl) {
+        forensicsStatusEl.innerHTML = '';
+        forensicsStatusEl.classList.add('hidden');
+    }
+    if (forensicsLastUpdatedEl) {
+        const relative = formatForensicsRelativeTime(data?.summary?.lastUpdated);
+        if (relative) {
+            forensicsLastUpdatedEl.textContent = `Last signal ${escapeHtml(relative)}`;
+            forensicsLastUpdatedEl.classList.remove('hidden');
+        } else {
+            forensicsLastUpdatedEl.textContent = '';
+            forensicsLastUpdatedEl.classList.add('hidden');
+        }
+    }
+}
+
+function renderForensicsSummary(data) {
+    if (!forensicsSummaryEl) return;
+    const summary = data?.summary || {};
+    const groups = Array.isArray(data?.groups) ? data.groups : [];
+    const highestSeverity = typeof summary.highestSeverity === 'string' ? summary.highestSeverity : 'info';
+    const style = getForensicsSeverityStyle(highestSeverity);
+    const counts = summary.severityCounts || {};
+    const totalEvents = Number(summary.totalEvents ?? 0);
+    const focusGroup = summary.focusGroupId ? groups.find((group) => group.id === summary.focusGroupId) : null;
+
+    const countsList = FORENSICS_SEVERITY_ORDER
+        .map((level) => {
+            const label = FORENSICS_SEVERITY_LABELS[level];
+            const value = Number(counts[level] ?? 0).toLocaleString();
+            const chip = getForensicsSeverityStyle(level).accent;
+            return `<li class="flex items-center gap-2"><span style="display:inline-block;width:8px;height:8px;border-radius:9999px;background:${chip};"></span>${label}: ${value}</li>`;
+        })
+        .join('');
+
+    forensicsSummaryEl.innerHTML = `
+        <div class="neu-card-inset p-4 rounded-lg" style="border-left: 4px solid ${style.accent}; background: ${style.background};">
+            <span class="text-xs font-semibold uppercase" style="color: ${style.accent};">Overall status</span>
+            <div class="mt-2 text-xl font-semibold" style="color: var(--text-primary);">${escapeHtml(summary.highestSeverityLabel || FORENSICS_SEVERITY_LABELS[highestSeverity])}</div>
+            <p class="mt-2 text-sm" style="color: var(--text-secondary);">${escapeHtml(summary.message || 'We will highlight anything unusual here.')}</p>
+        </div>
+        <div class="neu-card-inset p-4 rounded-lg">
+            <span class="text-xs font-semibold uppercase" style="color: var(--text-secondary);">Alerts spotted</span>
+            <div class="mt-2 text-2xl font-bold" style="color: var(--text-primary);">${totalEvents.toLocaleString()}</div>
+            <ul class="mt-3 text-sm space-y-1" style="color: var(--text-secondary);">
+                ${countsList}
+            </ul>
+        </div>
+        <div class="neu-card-inset p-4 rounded-lg">
+            <span class="text-xs font-semibold uppercase" style="color: var(--text-secondary);">Suggested focus</span>
+            <p class="mt-2 text-sm" style="color: var(--text-secondary);">
+                ${focusGroup
+                    ? `Start with <strong>${escapeHtml(focusGroup.title)}</strong> (${escapeHtml(focusGroup.severityLabel)} priority).`
+                    : 'As we detect new signals, we will highlight where to start.'}
+            </p>
+        </div>
+    `;
+}
+
+function renderForensicsCases(cases) {
+    if (!forensicsCaseListEl) return;
+    const active = Array.isArray(cases?.active) ? cases.active : [];
+    const history = Array.isArray(cases?.history) ? cases.history : [];
+
+    if (active.length === 0 && history.length === 0) {
+        forensicsCaseListEl.innerHTML = `
+            <div class="neu-card p-6 flex items-start gap-3">
+                <i class="fas fa-check-circle text-xl" style="color: #10b981;"></i>
+                <div>
+                    <h3 class="text-lg font-semibold" style="color: var(--text-primary);">No active investigations yet</h3>
+                    <p class="text-sm mt-1" style="color: var(--text-secondary);">When we detect high-impact signals, we'll open a case here automatically.</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    let html = '';
+
+    if (active.length > 0) {
+        html += active.map((caseItem) => renderCaseCard(caseItem, false)).join('');
+    } else {
+        html += `
+            <div class="neu-card p-6 flex items-start gap-3">
+                <i class="fas fa-shield-alt text-xl" style="color: #0ea5e9;"></i>
+                <div>
+                    <h3 class="text-lg font-semibold" style="color: var(--text-primary);">No open cases</h3>
+                    <p class="text-sm mt-1" style="color: var(--text-secondary);">We'll promote new forensic signals into cases for you.</p>
+                </div>
+            </div>
+        `;
+    }
+
+    if (history.length > 0) {
+        const historyCards = history.map((caseItem) => renderCaseCard(caseItem, true)).join('');
+        html += `
+            <details class="neu-card p-5 collapsible-card">
+                <summary class="flex items-center justify-between cursor-pointer select-none">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-clipboard-check" style="color: var(--text-secondary);"></i>
+                        <span class="text-sm font-semibold uppercase tracking-wide" style="color: var(--text-secondary);">
+                            Completed investigations (${history.length})
+                        </span>
+                    </div>
+                    <i class="fas fa-chevron-down summary-icon"></i>
+                </summary>
+                <div class="mt-4 flex flex-col gap-4">
+                    ${historyCards}
+                </div>
+            </details>
+        `;
+    }
+
+    forensicsCaseListEl.innerHTML = html;
+}
+
+function renderCaseCard(caseItem, isHistory) {
+    const style = getForensicsSeverityStyle(caseItem?.severity || 'info');
+    const title = caseItem?.title || caseItem?.caseType || 'Forensic case';
+    const hypothesis = caseItem?.hypothesis || '';
+    const eventCountValue = Number(caseItem?.eventCount ?? 0);
+    const eventCountLabel = Number.isFinite(eventCountValue) ? eventCountValue.toLocaleString() : '0';
+    const relative = formatForensicsRelativeTime(caseItem?.lastEventAt || caseItem?.updatedAt);
+
+    const chipParts = [
+        `<span class="px-2 py-1 text-xs font-semibold rounded-full" style="background: ${style.accent}; color: ${style.pillText};">${escapeHtml(caseItem?.severityLabel || 'Info')} priority</span>`,
+        `<span class="px-2 py-1 text-xs font-semibold rounded-full" style="background: rgba(15, 23, 42, 0.08); color: var(--text-secondary);">${escapeHtml(caseItem?.statusLabel || 'Open')}</span>`,
+    ];
+    if (caseItem?.column) {
+        chipParts.push(`<span class="text-xs" style="color: var(--text-secondary);">Column: ${escapeHtml(caseItem.column)}</span>`);
+    }
+    chipParts.push(`<span class="text-xs" style="color: var(--text-secondary);">Signals linked: ${escapeHtml(eventCountLabel)}</span>`);
+
+    const actionButtons = [];
+    if (!isHistory) {
+        if (caseItem?.action && caseItem.action.label) {
+            actionButtons.push(
+                `<button class="neu-button px-3 py-2 text-xs" data-forensics-action="${escapeHtml(caseItem.action.type)}"${caseItem.action.column ? ` data-column="${escapeHtml(caseItem.action.column)}"` : ''}>${escapeHtml(caseItem.action.label)}</button>`,
+            );
+        }
+        actionButtons.push(
+            `<button class="neu-button px-3 py-2 text-xs" data-forensics-action="resolve-case" data-case-id="${escapeHtml(String(caseItem.id))}"><i class="fas fa-check mr-1"></i>Mark resolved</button>`,
+        );
+        actionButtons.push(
+            `<button class="neu-button px-3 py-2 text-xs" data-forensics-action="dismiss-case" data-case-id="${escapeHtml(String(caseItem.id))}"><i class="fas fa-ban mr-1"></i>Dismiss</button>`,
+        );
+    } else if (caseItem?.action && caseItem.action.label) {
+        actionButtons.push(
+            `<button class="neu-button px-3 py-2 text-xs" data-forensics-action="${escapeHtml(caseItem.action.type)}"${caseItem.action.column ? ` data-column="${escapeHtml(caseItem.action.column)}"` : ''}>${escapeHtml(caseItem.action.label)}</button>`,
+        );
+    }
+
+    const actionsMarkup = actionButtons.length ? `<div class="flex flex-wrap gap-2 mt-3">${actionButtons.join('')}</div>` : '';
+    const hypothesisMarkup = hypothesis
+        ? `<p class="text-sm" style="color: var(--text-secondary);">${escapeHtml(hypothesis)}</p>`
+        : '';
+
+    return `
+        <div class="neu-card p-5" style="border-left: 4px solid ${style.accent};">
+            <div class="flex flex-col gap-3">
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div class="flex flex-wrap items-center gap-2">
+                        ${chipParts.join('')}
+                    </div>
+                    ${relative ? `<span class="text-xs" style="color: var(--text-secondary);">Updated ${escapeHtml(relative)}</span>` : ''}
+                </div>
+                <h3 class="text-xl font-semibold" style="color: var(--text-primary);">${escapeHtml(title)}</h3>
+                ${hypothesisMarkup}
+                ${actionsMarkup}
+            </div>
+        </div>
+    `;
+}
+
+function renderForensicsSignals(groups) {
+    if (!forensicsSignalListEl) return;
+    if (!Array.isArray(groups) || groups.length === 0) {
+        forensicsSignalListEl.innerHTML = `
+            <div class="neu-card p-6 flex items-start gap-3">
+                <i class="fas fa-wave-square text-xl" style="color: #94a3b8;"></i>
+                <div>
+                    <h3 class="text-lg font-semibold" style="color: var(--text-primary);">No raw signals pending</h3>
+                    <p class="text-sm mt-1" style="color: var(--text-secondary);">All current findings are already tracked in the investigations above.</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
+    const cards = groups.map((group) => renderSignalCard(group)).join('');
+    forensicsSignalListEl.innerHTML = cards;
+}
+
+function renderSignalCard(group) {
+    const style = getForensicsSeverityStyle(group?.severity || 'info');
+    const relative = formatForensicsRelativeTime(group?.lastOccurredAt);
+    const nextSteps = Array.isArray(group?.nextSteps)
+        ? group.nextSteps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')
+        : '';
+    const actionButton = group?.action && group.action.label
+        ? `<button class="neu-button px-3 py-2 text-xs" data-forensics-action="${escapeHtml(group.action.type)}"${group.action.column ? ` data-column="${escapeHtml(group.action.column)}"` : ''}>${escapeHtml(group.action.label)}</button>`
+        : '';
+    const eventsCount = Number(group?.count ?? 0);
+    const eventsLabel = Number.isFinite(eventsCount) ? eventsCount.toLocaleString() : '0';
+
+    return `
+        <div class="neu-card p-5" style="border-left: 4px solid ${style.accent};">
+            <div class="flex flex-col gap-3">
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="px-2 py-1 text-xs font-semibold rounded-full" style="background: ${style.accent}; color: ${style.pillText};">${escapeHtml(group?.severityLabel || 'Info')} priority</span>
+                        ${group?.column ? `<span class="text-xs" style="color: var(--text-secondary);">Column: ${escapeHtml(group.column)}</span>` : ''}
+                        <span class="text-xs" style="color: var(--text-secondary);">Signals: ${escapeHtml(eventsLabel)}</span>
+                    </div>
+                    ${relative ? `<span class="text-xs" style="color: var(--text-secondary);">Last flagged ${escapeHtml(relative)}</span>` : ''}
+                </div>
+                <h3 class="text-xl font-semibold" style="color: var(--text-primary);">${escapeHtml(group?.title || group?.eventType || 'Forensic signal')}</h3>
+                <p class="text-sm" style="color: var(--text-secondary);">${escapeHtml(group?.headline || '')}</p>
+                <p class="text-sm" style="color: var(--text-secondary);">${escapeHtml(group?.whatItMeans || '')}</p>
+                ${nextSteps ? `<div><p class="text-xs uppercase font-semibold" style="color: var(--text-secondary); letter-spacing: 0.08em;">Suggested next steps</p><ul class="mt-1 text-sm space-y-1" style="color: var(--text-secondary);">${nextSteps}</ul></div>` : ''}
+                ${actionButton ? `<div class="flex flex-wrap gap-2">${actionButton}</div>` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function formatForensicsRelativeTime(isoString) {
+    if (!isoString) return '';
+    const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return '';
+    const diff = Date.now() - date.getTime();
+    if (diff < 45 * 1000) return 'just now';
+    if (diff < 90 * 1000) return 'about a minute ago';
+    const minutes = Math.round(diff / 60000);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(diff / 3600000);
+    if (hours < 24) return `${hours} hr${hours === 1 ? '' : 's'} ago`;
+    const days = Math.round(diff / 86400000);
+    if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+async function performForensicsCaseStatus(caseId, status) {
+    if (!Number.isFinite(caseId) || !status) return;
+    try {
+        if (forensicsStatusEl) {
+            forensicsStatusEl.classList.remove('hidden');
+            forensicsStatusEl.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Updating case...';
+        }
+        await axios.post(`/api/forensics/cases/${caseId}/status`, { status });
+        if (typeof currentDatasetId === 'number' && Number.isFinite(currentDatasetId)) {
+            loadForensicsOverview(currentDatasetId);
+        }
+    } catch (error) {
+        console.error('Failed to update case status:', error);
+        if (forensicsStatusEl) {
+            const message = error.response?.data?.error || error.message || 'Failed to update case status.';
+            forensicsStatusEl.classList.remove('hidden');
+            forensicsStatusEl.innerHTML = `<span style="color: #ef4444;">${escapeHtml(message)}</span>`;
+        }
+    }
+}
+
+function handleForensicsAction(action) {
+    if (!action || !action.type) return;
+    if (action.type === 'open-cleaner-column') {
+        if (action.column) {
+            window.pendingCleanerColumn = action.column;
+        }
+        openCleaningModal(currentDatasetId);
+        return;
+    }
+    if (action.type === 'focus-insights-column') {
+        switchTab('insights');
+        if (action.column) {
+            const searchInput = document.getElementById('insight-search');
+            if (searchInput) {
+                searchInput.value = action.column;
+            }
+            filterInsights(action.column);
+        }
+        return;
+    }
+    if (action.type === 'resolve-case') {
+        if (Number.isFinite(action.caseId)) {
+            performForensicsCaseStatus(action.caseId, 'resolved');
+        } else {
+            console.warn('Resolve-case action missing caseId', action);
+        }
+        return;
+    }
+    if (action.type === 'dismiss-case') {
+        if (Number.isFinite(action.caseId)) {
+            performForensicsCaseStatus(action.caseId, 'dismissed');
+        } else {
+            console.warn('Dismiss-case action missing caseId', action);
+        }
+        return;
+    }
+    console.warn('Unknown forensics action:', action);
 }

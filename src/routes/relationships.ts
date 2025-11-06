@@ -114,7 +114,7 @@ relationships.get('/:id', async (c) => {
 
     const dataset = await db.prepare(`
       SELECT * FROM datasets WHERE id = ?
-    `).bind(datasetId).first();
+    `).bind(datasetId).first<any>();
 
     if (!dataset) {
       return c.json({ error: 'Dataset not found' }, 404);
@@ -144,7 +144,7 @@ relationships.get('/:id', async (c) => {
 
     const datasetIdNumber = Number(datasetId);
     const topicAnalysis = Number.isFinite(datasetIdNumber)
-      ? await computeTextTopics(datasetIdNumber, db, { rowLimit: MAX_RELATIONSHIP_ROWS })
+      ? await computeTextTopics(datasetIdNumber, db, { rowLimit: 1500 })
       : { topics: [], similarities: [], clusters: [] };
 
     // Get all analyses
@@ -152,7 +152,7 @@ relationships.get('/:id', async (c) => {
       SELECT * FROM analyses WHERE dataset_id = ?
     `).bind(datasetId).all();
 
-    const analyses = analysesResult.results.map(a => ({
+    const analyses = analysesResult.results.map((a: any) => ({
       ...a,
       result: JSON.parse(a.result as string)
     }));
@@ -184,7 +184,7 @@ relationships.get('/:id', async (c) => {
           ? uniqueCount / totalRows
           : 0;
         const size = 10 + (uniqueRatio * 30);
-        
+
         nodes.push({
           id: nodeId,
           label: col.name,
@@ -203,13 +203,13 @@ relationships.get('/:id', async (c) => {
           id: topicId,
           label: `Topic: ${topic.column}`,
           type: 'topic',
-          size: 24,
+          size: 6,
         });
         nodeMap.set(topicId, true);
       }
 
       const topTerms = (topic.keywords ?? [])
-        .slice(0, 5)
+        .slice(0, 3)
         .map((kw) => String(kw.term ?? '').trim())
         .filter((term) => term.length > 0);
 
@@ -220,7 +220,7 @@ relationships.get('/:id', async (c) => {
           target: topicId,
           type: 'topic',
           strength: 0.7,
-          label: topTerms.slice(0, 3).join(', '),
+          label: topTerms.join(', '),
         });
       }
     }

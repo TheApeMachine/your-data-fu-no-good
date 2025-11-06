@@ -215,7 +215,7 @@ function isNumericType(column: ColumnDefinition | undefined): boolean {
 
 function buildTextExtract(column: ColumnDefinition): string {
   const path = sanitizeJsonPath(column.name);
-  return `json_extract_text(data, '${path}')`;
+  return `CAST(json_extract(data, '${path}') AS VARCHAR)`;
 }
 
 function buildNumericExtract(column: ColumnDefinition): string {
@@ -311,6 +311,139 @@ function buildOrderClause(order: SessionQueryOrder, column: ColumnDefinition): s
     return `${expr} ${direction}`;
   }
   return `${expr} COLLATE NOCASE ${direction}`;
+}
+
+function buildJoinExtract(column: ColumnDefinition, alias: string): string {
+  const path = sanitizeJsonPath(column.name);
+  if (isNumericType(column)) {
+    return `CAST(json_extract(${alias}.data, '${path}') AS DOUBLE)`;
+  }
+  return `CAST(json_extract(${alias}.data, '${path}') AS VARCHAR)`;
+}
+
+function resolveDatasetLabel(alias: string | null | undefined, name: string | null | undefined, datasetId: number): string {
+  if (alias && alias.trim().length > 0) return alias.trim();
+  if (name && name.trim().length > 0) return name.trim();
+  return `Dataset ${datasetId}`;
+}
+
+async function fetchSessionDatasetMeta(
+  db: DatabaseBinding,
+  sessionId: number,
+  datasetId: number,
+): Promise<{
+  dataset_id: number;
+  name: string | null;
+  alias: string | null;
+  columns: ColumnDefinition[];
+  row_count: number;
+  column_count: number;
+}> {
+  const row = await db
+    .prepare(`
+      SELECT d.id, d.name, d.columns, d.row_count, d.column_count, sd.alias
+      FROM session_datasets sd
+      JOIN datasets d ON d.id = sd.dataset_id
+      WHERE sd.session_id = ? AND sd.dataset_id = ?
+    `)
+    .bind(sessionId, datasetId)
+    .first<{ id: number; name: string | null; columns: unknown; row_count: number | null; column_count: number | null; alias: string | null }>();
+
+  if (!row) {
+    const error: any = new Error('Dataset not attached to session');
+    error.status = 404;
+    throw error;
+  }
+
+  const columns = parseJson<ColumnDefinition[]>(row.columns, []);
+  return {
+    dataset_id: Number(row.id),
+    name: row.name,
+    alias: row.alias,
+    columns,
+    row_count: Number(row.row_count ?? 0),
+    column_count: Number(row.column_count ?? columns.length),
+  };
+}
+
+async function fetchJoinSuggestionRecord(
+  db: DatabaseBinding,
+  sessionId: number,
+  suggestionId: number,
+): Promise<JoinSuggestionRecord | null> {
+  const row = await db
+    .prepare(`
+      SELECT id, session_id, left_dataset_id, right_dataset_id, left_columns, right_columns, confidence, sample, status, created_at
+      FROM join_suggestions
+      WHERE session_id = ? AND id = ?
+    `)
+    .bind(sessionId, suggestionId)
+    .first<JoinSuggestionRow>();
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    session_id: Number(row.session_id),
+    left_dataset_id: Number(row.left_dataset_id),
+    right_dataset_id: Number(row.right_dataset_id),
+    left_columns: parseStringArray(row.left_columns),
+    right_columns: parseStringArray(row.right_columns),
+    confidence: Number(row.confidence ?? 0),
+    sample: parseJson(row.sample, undefined),
+    status: (row.status ?? 'suggested') as JoinSuggestionRecord['status'],
+    created_at: row.created_at,
+  };
+}
+
+function buildJoinedColumnDefinitions(
+  leftColumns: ColumnDefinition[],
+  rightColumns: ColumnDefinition[],
+  leftPrefix: string,
+  rightPrefix: string,
+): ColumnDefinition[] {
+  const merged: ColumnDefinition[] = [];
+  for (const column of leftColumns) {
+    if (!column?.name) continue;
+    merged.push({
+      ...column,
+      name: `${leftPrefix}.${column.name}`,
+      nullable: true,
+    });
+  }
+  for (const column of rightColumns) {
+    if (!column?.name) continue;
+    merged.push({
+      ...column,
+      name: `${rightPrefix}.${column.name}`,
+      nullable: true,
+    });
+  }
+  return merged;
+}
+
+function mergeJoinedRow(
+  leftRow: Record<string, unknown>,
+  rightRow: Record<string, unknown>,
+  leftColumns: ColumnDefinition[],
+  rightColumns: ColumnDefinition[],
+  leftPrefix: string,
+  rightPrefix: string,
+): Record<string, unknown> {
+  const combined: Record<string, unknown> = {};
+  for (const column of leftColumns) {
+    if (!column?.name) continue;
+    const key = `${leftPrefix}.${column.name}`;
+    combined[key] = leftRow?.[column.name] ?? null;
+  }
+  for (const column of rightColumns) {
+    if (!column?.name) continue;
+    const key = `${rightPrefix}.${column.name}`;
+    combined[key] = rightRow?.[column.name] ?? null;
+  }
+  return combined;
 }
 sessions.post('/', async (c) => {
   try {
@@ -762,6 +895,322 @@ sessions.get('/:id/join-suggestions', async (c) => {
   } catch (error: any) {
     console.error('List join suggestions error:', error);
     return c.json({ error: error.message || 'Failed to fetch join suggestions' }, error.status || 500);
+  }
+});
+
+sessions.post('/:id/join-suggestions/:suggestionId/preview', async (c) => {
+  try {
+    const sessionId = Number(c.req.param('id'));
+    const suggestionId = Number(c.req.param('suggestionId'));
+    if (!Number.isFinite(sessionId) || !Number.isFinite(suggestionId)) {
+      return c.json({ error: 'Invalid session or suggestion id' }, 400);
+    }
+
+    const db = resolveDatabase(c.env);
+    await ensureSessionExists(db, sessionId);
+
+    const suggestion = await fetchJoinSuggestionRecord(db, sessionId, suggestionId);
+    if (!suggestion) {
+      return c.json({ error: 'Join suggestion not found' }, 404);
+    }
+
+    const leftColumnName = suggestion.left_columns?.[0];
+    const rightColumnName = suggestion.right_columns?.[0];
+    if (!leftColumnName || !rightColumnName) {
+      return c.json({ error: 'Join suggestion is missing column metadata' }, 400);
+    }
+
+    await ensureDatasetAttached(db, sessionId, suggestion.left_dataset_id);
+    await ensureDatasetAttached(db, sessionId, suggestion.right_dataset_id);
+
+    const leftMeta = await fetchSessionDatasetMeta(db, sessionId, suggestion.left_dataset_id);
+    const rightMeta = await fetchSessionDatasetMeta(db, sessionId, suggestion.right_dataset_id);
+
+    const leftColumn = leftMeta.columns.find((col) => col?.name === leftColumnName);
+    const rightColumn = rightMeta.columns.find((col) => col?.name === rightColumnName);
+    if (!leftColumn || !rightColumn) {
+      return c.json({ error: 'Join columns could not be resolved' }, 400);
+    }
+
+    const leftExpr = buildJoinExtract(leftColumn, 'l');
+    const rightExpr = buildJoinExtract(rightColumn, 'r');
+    const joinCondition = `${leftExpr} = ${rightExpr}`;
+    const nonNullGuard = `${leftExpr} IS NOT NULL AND ${rightExpr} IS NOT NULL`;
+    const joinOn = `${joinCondition} AND ${nonNullGuard}`;
+
+    const countSql = `
+      SELECT COUNT(*) AS count
+      FROM data_rows l
+      JOIN data_rows r
+        ON ${joinOn}
+      WHERE l.dataset_id = ? AND r.dataset_id = ?
+    `;
+
+    const countRow = await db
+      .prepare(countSql)
+      .bind(suggestion.left_dataset_id, suggestion.right_dataset_id)
+      .first<{ count: number }>();
+    const totalMatches = Number(countRow?.count ?? 0);
+
+    const previewLimit = 25;
+    const previewSql = `
+      SELECT l.data AS left_data, r.data AS right_data
+      FROM data_rows l
+      JOIN data_rows r
+        ON ${joinOn}
+      WHERE l.dataset_id = ? AND r.dataset_id = ?
+      ORDER BY l.row_number, r.row_number
+      LIMIT ?
+    `;
+
+    const previewRows = await db
+      .prepare(previewSql)
+      .bind(suggestion.left_dataset_id, suggestion.right_dataset_id, previewLimit)
+      .all<{ left_data: unknown; right_data: unknown }>();
+
+    const leftLabel = resolveDatasetLabel(leftMeta.alias, leftMeta.name, leftMeta.dataset_id);
+    const rightLabel = resolveDatasetLabel(rightMeta.alias, rightMeta.name, rightMeta.dataset_id);
+    const leftPrefix = leftLabel;
+    const rightPrefix = rightLabel;
+    const joinedColumns = buildJoinedColumnDefinitions(leftMeta.columns, rightMeta.columns, leftPrefix, rightPrefix);
+
+    const rows = previewRows.results.map((row: any) => {
+      const leftData = parseJson<Record<string, unknown>>(row.left_data, {});
+      const rightData = parseJson<Record<string, unknown>>(row.right_data, {});
+      return mergeJoinedRow(leftData, rightData, leftMeta.columns, rightMeta.columns, leftPrefix, rightPrefix);
+    });
+
+    return c.json({
+      suggestion: {
+        id: suggestion.id,
+        left_dataset_id: suggestion.left_dataset_id,
+        right_dataset_id: suggestion.right_dataset_id,
+        left_column: leftColumnName,
+        right_column: rightColumnName,
+        confidence: suggestion.confidence,
+        left_label: leftLabel,
+        right_label: rightLabel,
+      },
+      preview: {
+        total_rows: totalMatches,
+        row_limit: previewLimit,
+        columns: joinedColumns,
+        rows,
+      },
+    });
+  } catch (error: any) {
+    console.error('Join preview error:', error);
+    return c.json({ error: error.message || 'Failed to build join preview' }, error.status || 500);
+  }
+});
+
+sessions.post('/:id/join-suggestions/:suggestionId/apply', async (c) => {
+  try {
+    const sessionId = Number(c.req.param('id'));
+    const suggestionId = Number(c.req.param('suggestionId'));
+    if (!Number.isFinite(sessionId) || !Number.isFinite(suggestionId)) {
+      return c.json({ error: 'Invalid session or suggestion id' }, 400);
+    }
+
+    const db = resolveDatabase(c.env);
+    await ensureSessionExists(db, sessionId);
+
+    const suggestion = await fetchJoinSuggestionRecord(db, sessionId, suggestionId);
+    if (!suggestion) {
+      return c.json({ error: 'Join suggestion not found' }, 404);
+    }
+
+    const leftColumnName = suggestion.left_columns?.[0];
+    const rightColumnName = suggestion.right_columns?.[0];
+    if (!leftColumnName || !rightColumnName) {
+      return c.json({ error: 'Join suggestion is missing column metadata' }, 400);
+    }
+
+    await ensureDatasetAttached(db, sessionId, suggestion.left_dataset_id);
+    await ensureDatasetAttached(db, sessionId, suggestion.right_dataset_id);
+
+    const leftMeta = await fetchSessionDatasetMeta(db, sessionId, suggestion.left_dataset_id);
+    const rightMeta = await fetchSessionDatasetMeta(db, sessionId, suggestion.right_dataset_id);
+
+    const leftColumn = leftMeta.columns.find((col) => col?.name === leftColumnName);
+    const rightColumn = rightMeta.columns.find((col) => col?.name === rightColumnName);
+    if (!leftColumn || !rightColumn) {
+      return c.json({ error: 'Join columns could not be resolved' }, 400);
+    }
+
+    const leftExpr = buildJoinExtract(leftColumn, 'l');
+    const rightExpr = buildJoinExtract(rightColumn, 'r');
+    const joinCondition = `${leftExpr} = ${rightExpr}`;
+    const nonNullGuard = `${leftExpr} IS NOT NULL AND ${rightExpr} IS NOT NULL`;
+    const joinOn = `${joinCondition} AND ${nonNullGuard}`;
+
+    const countSql = `
+      SELECT COUNT(*) AS count
+      FROM data_rows l
+      JOIN data_rows r
+        ON ${joinOn}
+      WHERE l.dataset_id = ? AND r.dataset_id = ?
+    `;
+
+    const countRow = await db
+      .prepare(countSql)
+      .bind(suggestion.left_dataset_id, suggestion.right_dataset_id)
+      .first<{ count: number }>();
+    const totalMatches = Number(countRow?.count ?? 0);
+    if (totalMatches <= 0) {
+      return c.json({ error: 'Join produced no matching rows' }, 409);
+    }
+
+    const leftLabel = resolveDatasetLabel(leftMeta.alias, leftMeta.name, leftMeta.dataset_id);
+    const rightLabel = resolveDatasetLabel(rightMeta.alias, rightMeta.name, rightMeta.dataset_id);
+    const leftPrefix = leftLabel;
+    const rightPrefix = rightLabel;
+    const joinedColumns = buildJoinedColumnDefinitions(leftMeta.columns, rightMeta.columns, leftPrefix, rightPrefix);
+
+    const datasetName = `${leftLabel} ⋈ ${rightLabel} (${leftColumnName} = ${rightColumnName})`;
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const originalFilename = `join_${leftMeta.dataset_id}_${rightMeta.dataset_id}_${timestamp}.csv`;
+
+    let newDatasetId: number | null = null;
+
+    try {
+      const insertResult = await db
+        .prepare(`
+          INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns, analysis_status)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          datasetName,
+          originalFilename,
+          'csv',
+          totalMatches,
+          joinedColumns.length,
+          JSON.stringify(joinedColumns),
+          'pending',
+        )
+        .run();
+
+      const lastRowId = Number(insertResult.meta.last_row_id);
+      if (Number.isFinite(lastRowId) && lastRowId > 0) {
+        newDatasetId = lastRowId;
+      } else {
+        const latest = await db
+          .prepare(`SELECT id FROM datasets ORDER BY id DESC`)
+          .first<{ id: number }>();
+        if (!latest?.id) {
+          throw new Error('Failed to determine dataset id for joined dataset');
+        }
+        newDatasetId = Number(latest.id);
+      }
+
+      const batchSize = 500;
+      let offset = 0;
+      let rowNumber = 0;
+
+      while (offset < totalMatches) {
+        const batchSql = `
+          SELECT l.data AS left_data, r.data AS right_data
+          FROM data_rows l
+          JOIN data_rows r
+            ON ${joinOn}
+          WHERE l.dataset_id = ? AND r.dataset_id = ?
+          ORDER BY l.row_number, r.row_number
+          LIMIT ? OFFSET ?
+        `;
+
+        const batchRows = await db
+          .prepare(batchSql)
+          .bind(suggestion.left_dataset_id, suggestion.right_dataset_id, batchSize, offset)
+          .all<{ left_data: unknown; right_data: unknown }>();
+
+        if (!batchRows.results.length) {
+          break;
+        }
+
+        const statements = batchRows.results.map((row: any, index: number) => {
+          const leftData = parseJson<Record<string, unknown>>(row.left_data, {});
+          const rightData = parseJson<Record<string, unknown>>(row.right_data, {});
+          const combined = mergeJoinedRow(leftData, rightData, leftMeta.columns, rightMeta.columns, leftPrefix, rightPrefix);
+          return db
+            .prepare(`INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned) VALUES (?, ?, ?, 0)`)
+            .bind(newDatasetId, rowNumber + index, JSON.stringify(combined));
+        });
+
+        if (statements.length) {
+          await db.batch(statements);
+        }
+
+        rowNumber += statements.length;
+        offset += batchSize;
+      }
+
+      const posRow = await db
+        .prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS next_pos FROM session_datasets WHERE session_id = ?`)
+        .bind(sessionId)
+        .first<{ next_pos: number }>();
+      const nextPos = Number(posRow?.next_pos ?? 1);
+
+      await db
+        .prepare(`INSERT INTO session_datasets (session_id, dataset_id, alias, position) VALUES (?, ?, ?, ?)`)
+        .bind(sessionId, newDatasetId, datasetName, nextPos)
+        .run();
+
+      await db
+        .prepare(`UPDATE workspace_sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(sessionId)
+        .run();
+
+      await db
+        .prepare(`UPDATE join_suggestions SET status = 'accepted' WHERE id = ?`)
+        .bind(suggestion.id)
+        .run();
+
+      if (newDatasetId) {
+        void queueJoinDiscovery(db, sessionId).catch((error) => {
+          console.error('Join discovery after apply failed:', error);
+        });
+
+        const summary = await fetchSessionSummary(db, sessionId);
+        return c.json({
+          dataset_id: newDatasetId,
+          dataset_name: datasetName,
+          summary,
+        });
+      }
+
+      throw new Error('Unable to create joined dataset');
+    } catch (error) {
+      if (newDatasetId) {
+        try {
+          await db
+            .prepare(`DELETE FROM session_datasets WHERE session_id = ? AND dataset_id = ?`)
+            .bind(sessionId, newDatasetId)
+            .run();
+        } catch (cleanupError) {
+          console.error('Cleanup failed (session_datasets):', cleanupError);
+        }
+        try {
+          await db
+            .prepare(`DELETE FROM data_rows WHERE dataset_id = ?`)
+            .bind(newDatasetId)
+            .run();
+        } catch (cleanupError) {
+          console.error('Cleanup failed (data_rows):', cleanupError);
+        }
+        try {
+          await db
+            .prepare(`DELETE FROM datasets WHERE id = ?`)
+            .bind(newDatasetId)
+            .run();
+        } catch (cleanupError) {
+          console.error('Cleanup failed (datasets):', cleanupError);
+        }
+      }
+      throw error;
+    }
+  } catch (error: any) {
+    console.error('Join apply error:', error);
+    return c.json({ error: error.message || 'Failed to apply join suggestion' }, error.status || 500);
   }
 });
 
