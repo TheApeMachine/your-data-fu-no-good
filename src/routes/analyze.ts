@@ -5,15 +5,17 @@ import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
 import { applyColumnMappings } from '../utils/column-mapper';
 import type { Bindings } from '../types';
+import { resolveDatabase } from '../storage';
 
 const analyze = new Hono<{ Bindings: Bindings }>();
 
 analyze.post('/:id', async (c) => {
   try {
     const datasetId = Number(c.req.param('id'));
+    const db = resolveDatabase(c.env);
 
     // Get dataset info
-    const dataset = await c.env.DB.prepare(`
+    const dataset = await db.prepare(`
       SELECT * FROM datasets WHERE id = ?
     `).bind(datasetId).first();
 
@@ -21,8 +23,17 @@ analyze.post('/:id', async (c) => {
       return c.json({ error: 'Dataset not found' }, 404);
     }
 
+    // Reset previous analyses and visualizations to avoid duplicates on re-runs
+    await db.prepare(`
+      DELETE FROM analyses WHERE dataset_id = ?
+    `).bind(datasetId).run();
+
+    await db.prepare(`
+      DELETE FROM visualizations WHERE dataset_id = ?
+    `).bind(datasetId).run();
+
     // Get data rows
-    const rowsResult = await c.env.DB.prepare(`
+    const rowsResult = await db.prepare(`
       SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
     `).bind(datasetId).all();
 
@@ -30,7 +41,7 @@ analyze.post('/:id', async (c) => {
     const columns = JSON.parse(dataset.columns as string);
 
     // Fetch and apply column mappings (ID -> Name enrichment)
-    const mappingsResult = await c.env.DB.prepare(`
+    const mappingsResult = await db.prepare(`
       SELECT id_column, name_column FROM column_mappings WHERE dataset_id = ?
     `).bind(datasetId).all();
 
@@ -54,10 +65,10 @@ analyze.post('/:id', async (c) => {
     }
 
     // Run analysis
-    await analyzeDataset(datasetId, rows, columns, c.env.DB);
+    await analyzeDataset(datasetId, rows, columns, db);
 
     // Fetch analyses
-    const analysesResult = await c.env.DB.prepare(`
+    const analysesResult = await db.prepare(`
       SELECT * FROM analyses WHERE dataset_id = ?
     `).bind(datasetId).all();
 
@@ -67,10 +78,10 @@ analyze.post('/:id', async (c) => {
     })) as any[];
 
     // Generate visualizations
-    await generateVisualizations(datasetId, rows, analyses, c.env.DB);
+    await generateVisualizations(datasetId, rows, analyses, db);
 
     // Update status
-    await c.env.DB.prepare(`
+    await db.prepare(`
       UPDATE datasets SET analysis_status = ?, visualization_status = ?
       WHERE id = ?
     `).bind('complete', 'complete', datasetId).run();

@@ -91,7 +91,7 @@ function renderKeyColumnsSelector() {
         </p>
         <div class="grid grid-cols-2 gap-2">
             ${allColumnsForCleaning.map(col => {
-                const issuggested = suggestedKeyColumns.includes(col);
+                const isSuggested = suggestedKeyColumns.includes(col);
                 return `
                     <label class="flex items-center gap-2 p-2 rounded neu-card-inset cursor-pointer hover:bg-opacity-50">
                         <input type="checkbox" 
@@ -110,6 +110,24 @@ function renderKeyColumnsSelector() {
             <i class="fas fa-star" style="color: var(--accent);"></i> = Suggested based on low null rate
         </p>
     `;
+
+    const targetColumn = window.pendingCleanerColumn;
+    if (targetColumn) {
+        const checkbox = container.querySelector(`input[value="${targetColumn}"]`);
+        if (checkbox) {
+            checkbox.checked = true;
+            const label = checkbox.closest('label');
+            if (label) {
+                label.style.boxShadow = '0 0 0 2px var(--accent)';
+                label.style.transition = 'box-shadow 0.3s ease';
+                setTimeout(() => {
+                    label.style.boxShadow = '';
+                }, 2500);
+                label.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+        window.pendingCleanerColumn = null;
+    }
 }
 
 /**

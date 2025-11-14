@@ -3,7 +3,8 @@
 import { Hono } from 'hono';
 import { MongoClient } from 'mongodb';
 import { inferColumnTypes } from '../utils/papa-parser';
-import type { Bindings } from '../types';
+import type { Bindings, ColumnDefinition } from '../types';
+import { resolveDatabase } from '../storage';
 
 const mongodbUpload = new Hono<{ Bindings: Bindings }>();
 
@@ -58,8 +59,8 @@ mongodbUpload.post('/list-collections', async (c) => {
     });
 
     await client.connect();
-    const db = client.db(database);
-    const collections = await db.listCollections().toArray();
+    const mongoDb = client.db(database);
+    const collections = await mongoDb.listCollections().toArray();
     await client.close();
 
     return c.json({ 
@@ -111,8 +112,8 @@ mongodbUpload.post('/', async (c) => {
     });
 
     await client.connect();
-    const db = client.db(database);
-    const col = db.collection(collection);
+    const mongoDb = client.db(database);
+    const col = mongoDb.collection(collection);
 
     // Execute query or aggregation pipeline with cursor streaming
     const maxRows = limit || 1000000; // Default 1M rows, user can override
@@ -190,14 +191,25 @@ mongodbUpload.post('/', async (c) => {
     }
 
     // Infer column types
-    const columnTypes = inferColumnTypes(rows);
-    const columns = Object.keys(rows[0]).map(name => ({
-      name,
-      type: columnTypes[name] || 'string',
-      nullable: rows.some(r => r[name] === null || r[name] === undefined || r[name] === ''),
-      unique_count: new Set(rows.map(r => r[name])).size,
-      sample_values: rows.slice(0, 3).map(r => r[name])
-    }));
+    const columnProfiles = inferColumnTypes(rows);
+    const columns: ColumnDefinition[] = Object.keys(rows[0]).map(name => {
+      const profile = columnProfiles[name];
+      const nullable = profile
+        ? profile.null_count > 0
+        : rows.some(r => r[name] === null || r[name] === undefined || r[name] === '');
+      const uniqueCount = profile?.unique_count ?? new Set(rows.map(r => r[name])).size;
+      const sampleValues = profile?.sample_values ?? rows.slice(0, 3).map(r => r[name]);
+      const columnType = profile?.base_type ?? 'string';
+      return {
+        name,
+        type: columnType,
+        semantic_type: profile?.semantic_type,
+        nullable,
+        unique_count: uniqueCount,
+        sample_values: sampleValues,
+        profile,
+      };
+    });
 
     // Create dataset record with MongoDB metadata
     const datasetName = `${database}.${collection}`;
@@ -208,7 +220,9 @@ mongodbUpload.post('/', async (c) => {
       pipeline: pipeline ? (typeof pipeline === 'string' ? pipeline : JSON.stringify(pipeline)) : undefined
     };
 
-    const datasetResult = await c.env.DB.prepare(`
+    const db = resolveDatabase(c.env);
+
+    const datasetResult = await db.prepare(`
       INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns, analysis_status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
@@ -234,13 +248,13 @@ mongodbUpload.post('/', async (c) => {
     for (let i = 0; i < rows.length; i += d1BatchSize) {
       const batch = rows.slice(i, i + d1BatchSize);
       const statements = batch.map((row, idx) => 
-        c.env.DB.prepare(`
+        db.prepare(`
           INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
           VALUES (?, ?, ?, ?)
         `).bind(datasetId, i + idx, JSON.stringify(row), 0)
       );
       
-      await c.env.DB.batch(statements);
+      await db.batch(statements);
       
       // Log progress for large imports
       if ((i + d1BatchSize) % 1000 === 0 || (i + d1BatchSize) >= rows.length) {

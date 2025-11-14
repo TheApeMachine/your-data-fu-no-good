@@ -22,27 +22,42 @@ export function calculateStats(values: any[], columnType: string): Stats {
 
   if (columnType === 'number') {
     const numbers = filtered.map(v => Number(v)).filter(n => !isNaN(n));
+    const hasNumbers = numbers.length > 0;
+    const sortedNumbers = hasNumbers ? [...numbers].sort((a, b) => a - b) : [];
+    const q1 = hasNumbers ? percentile(numbers, 25) : undefined;
+    const q2 = hasNumbers ? percentile(numbers, 50) : undefined;
+    const q3 = hasNumbers ? percentile(numbers, 75) : undefined;
+
+    const meanValue = hasNumbers ? mean(numbers) : undefined;
+    const medianValue = hasNumbers ? median(numbers) : undefined;
+    const modeValue = hasNumbers ? mode(numbers) : undefined;
+    const stdDevValue = hasNumbers ? stdDev(numbers) : undefined;
+
     return {
       count: values.length,
-      mean: mean(numbers),
-      median: median(numbers),
-      mode: mode(numbers),
-      stdDev: stdDev(numbers),
-      min: Math.min(...numbers),
-      max: Math.max(...numbers),
-      q1: percentile(numbers, 25),
-      q2: percentile(numbers, 50),
-      q3: percentile(numbers, 75),
+      mean: meanValue,
+      median: medianValue,
+      mode: modeValue,
+      stdDev: stdDevValue,
+      min: hasNumbers ? sortedNumbers[0] : undefined,
+      max: hasNumbers ? sortedNumbers[sortedNumbers.length - 1] : undefined,
+      q1,
+      q2,
+      q3,
       nullCount,
       uniqueCount
     };
   }
 
+  const sortedValues = filtered.map(value => String(value)).sort((a, b) => a.localeCompare(b));
+  const minValue = sortedValues.length > 0 ? sortedValues[0] : undefined;
+  const maxValue = sortedValues.length > 0 ? sortedValues[sortedValues.length - 1] : undefined;
+
   return {
     count: values.length,
     mode: mode(filtered),
-    min: filtered[0],
-    max: filtered[filtered.length - 1],
+    min: minValue,
+    max: maxValue,
     nullCount,
     uniqueCount
   };
@@ -118,6 +133,56 @@ export function detectOutliers(numbers: number[]): { indices: number[], threshol
   return { indices, threshold: iqr };
 }
 
+export interface ValueAnomaly {
+  index: number;
+  value: number;
+  score: number;
+  direction: 'high' | 'low';
+  percentileRank: number;
+}
+
+export function detectRobustAnomalies(
+  series: { value: number; index: number }[],
+  options: { threshold?: number; maxResults?: number } = {}
+): ValueAnomaly[] {
+  const { threshold = 3, maxResults = 10 } = options;
+  if (series.length < 8) return [];
+
+  const values = series.map((p) => p.value);
+  const medianValue = median(values);
+  const deviations = values.map((v) => Math.abs(v - medianValue));
+  const mad = median(deviations) || 0;
+  const epsilon = mad === 0 ? (stdDev(values) || 1e-9) : mad;
+
+  const sortedValues = [...values].sort((a, b) => a - b);
+
+  const anomalies: ValueAnomaly[] = [];
+  const denominator = sortedValues.length > 1 ? (sortedValues.length - 1) : 1;
+
+  series.forEach((point) => {
+    const robustZ = Math.abs(0.6745 * (point.value - medianValue) / epsilon);
+    if (robustZ >= threshold) {
+      const direction = point.value >= medianValue ? 'high' : 'low';
+      const rankIndex = sortedValues.findIndex((v) => v >= point.value);
+      const percentile =
+        sortedValues.length > 1
+          ? ((rankIndex === -1 ? sortedValues.length - 1 : rankIndex) / denominator) * 100
+          : 100;
+      anomalies.push({
+        index: point.index,
+        value: point.value,
+        score: robustZ,
+        direction,
+        percentileRank: Number.isFinite(percentile) ? percentile : direction === 'high' ? 100 : 0,
+      });
+    }
+  });
+
+  return anomalies
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxResults);
+}
+
 export function calculateCorrelation(x: number[], y: number[]): number {
   if (x.length !== y.length || x.length === 0) return 0;
 
@@ -139,6 +204,138 @@ export function calculateCorrelation(x: number[], y: number[]): number {
 
   if (denomX === 0 || denomY === 0) return 0;
   return numerator / Math.sqrt(denomX * denomY);
+}
+
+function rankWithTies(values: number[]): number[] {
+  if (values.length === 0) return [];
+  const entries = values.map((value, index) => ({ value, index }));
+  entries.sort((a, b) => a.value - b.value);
+
+  const ranks = new Array<number>(values.length);
+  let position = 0;
+  while (position < entries.length) {
+    let end = position + 1;
+    while (end < entries.length && entries[end].value === entries[position].value) {
+      end += 1;
+    }
+    const averageRank = (position + end - 1) / 2 + 1; // 1-based average rank
+    for (let i = position; i < end; i++) {
+      ranks[entries[i].index] = averageRank;
+    }
+    position = end;
+  }
+  return ranks;
+}
+
+export function calculateSpearmanCorrelation(x: number[], y: number[]): number {
+  if (x.length !== y.length || x.length === 0) return 0;
+  const rankedX = rankWithTies(x);
+  const rankedY = rankWithTies(y);
+  return calculateCorrelation(rankedX, rankedY);
+}
+
+function quantile(sortedValues: number[], q: number): number {
+  if (sortedValues.length === 0) return 0;
+  if (sortedValues.length === 1) return sortedValues[0];
+  const position = (sortedValues.length - 1) * q;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.min(sortedValues.length - 1, lowerIndex + 1);
+  const fraction = position - lowerIndex;
+  return sortedValues[lowerIndex] * (1 - fraction) + sortedValues[upperIndex] * fraction;
+}
+
+function discretizeIntoBins(values: number[], desiredBins: number): { bins: number[]; binCount: number } {
+  const uniqueCount = new Set(values).size;
+  let binCount = Math.max(2, Math.min(desiredBins, uniqueCount));
+  if (uniqueCount < 2) {
+    return { bins: new Array(values.length).fill(0), binCount: 1 };
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const thresholds: number[] = [];
+  for (let i = 1; i < binCount; i++) {
+    thresholds.push(quantile(sorted, i / binCount));
+  }
+
+  const bins = values.map((value) => {
+    let idx = thresholds.findIndex((threshold) => value <= threshold);
+    if (idx === -1) idx = binCount - 1;
+    return idx;
+  });
+
+  const distinctBins = new Set(bins).size;
+  if (distinctBins < 2 && binCount > 2) {
+    binCount = distinctBins || 1;
+  }
+
+  return { bins, binCount }; // binCount reflects desired target even if some bins empty
+}
+
+function entropyFromCounts(counts: number[], total: number): number {
+  let entropy = 0;
+  for (const count of counts) {
+    if (count === 0) continue;
+    const probability = count / total;
+    entropy -= probability * Math.log(probability);
+  }
+  return entropy;
+}
+
+export interface MutualInformationMetrics {
+  mi: number;
+  normalized: number;
+}
+
+export function calculateMutualInformationMetrics(x: number[], y: number[], maxBins = 10): MutualInformationMetrics {
+  if (x.length !== y.length || x.length === 0) {
+    return { mi: 0, normalized: 0 };
+  }
+
+  const { bins: xBins, binCount: xBinCount } = discretizeIntoBins(x, maxBins);
+  const { bins: yBins, binCount: yBinCount } = discretizeIntoBins(y, maxBins);
+
+  if (xBinCount < 2 || yBinCount < 2) {
+    return { mi: 0, normalized: 0 };
+  }
+
+  const total = xBins.length;
+  const xCounts = new Array<number>(xBinCount).fill(0);
+  const yCounts = new Array<number>(yBinCount).fill(0);
+  const jointCounts = Array.from({ length: xBinCount }, () => new Array<number>(yBinCount).fill(0));
+
+  for (let i = 0; i < total; i++) {
+    const xb = xBins[i];
+    const yb = yBins[i];
+    xCounts[xb] += 1;
+    yCounts[yb] += 1;
+    jointCounts[xb][yb] += 1;
+  }
+
+  const hx = entropyFromCounts(xCounts, total);
+  const hy = entropyFromCounts(yCounts, total);
+  if (hx === 0 || hy === 0) {
+    return { mi: 0, normalized: 0 };
+  }
+
+  let mi = 0;
+  for (let ix = 0; ix < xBinCount; ix++) {
+    for (let iy = 0; iy < yBinCount; iy++) {
+      const joint = jointCounts[ix][iy];
+      if (joint === 0) continue;
+      const pxy = joint / total;
+      const px = xCounts[ix] / total;
+      const py = yCounts[iy] / total;
+      mi += pxy * Math.log(pxy / (px * py));
+    }
+  }
+
+  const denominator = (hx + hy) / 2;
+  const normalized = denominator > 0 ? Math.min(1, mi / denominator) : 0;
+
+  return {
+    mi,
+    normalized: Number.isFinite(normalized) ? normalized : 0,
+  };
 }
 
 export function detectTrend(values: number[]): { direction: 'up' | 'down' | 'stable', strength: number } {

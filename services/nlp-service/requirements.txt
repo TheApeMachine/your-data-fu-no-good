@@ -1,0 +1,20 @@
+# NLP Service - State-of-the-art sentiment and intent analysis
+# Using transformer models from Hugging Face
+
+torch>=2.0.0
+transformers>=4.35.0
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+numpy>=1.24.0
+
+# Sentiment analysis model
+# Using cardiffnlp/twitter-roberta-base-sentiment-latest for high accuracy
+# Alternative: distilbert-base-uncased-finetuned-sst-2-english (faster, lighter)
+
+# Intent classification
+# Using microsoft/DialoGPT-medium for conversational intent
+# Alternative: facebook/bart-large-mnli for zero-shot classification
+

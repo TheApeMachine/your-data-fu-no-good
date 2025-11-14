@@ -5,21 +5,33 @@ import { parseCSV, inferColumnTypes } from '../utils/papa-parser';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
 import { detectColumnMappings } from '../utils/column-mapper';
-import type { Bindings } from '../types';
+import type { Bindings, ColumnDefinition } from '../types';
+import { resolveDatabase } from '../storage';
 
 const upload = new Hono<{ Bindings: Bindings }>();
 
 upload.post('/', async (c) => {
   try {
-    const formData = await c.req.formData();
-    const file = formData.get('file') as File;
-    
+    let file: File | null = null;
+
+    try {
+      const formData = await c.req.formData();
+      const candidate = formData.get('file');
+      file = candidate instanceof File ? candidate : null;
+    } catch (error) {
+      const body = await c.req.parseBody();
+      const candidate = body['file'];
+      if (candidate instanceof File) {
+        file = candidate;
+      }
+    }
+
     if (!file) {
       return c.json({ error: 'No file provided' }, 400);
     }
 
     const filename = file.name;
-    const fileType = filename.endsWith('.csv') ? 'csv' : 
+    const fileType = filename.endsWith('.csv') ? 'csv' :
                      filename.endsWith('.json') ? 'json' : null;
 
     if (!fileType) {
@@ -27,7 +39,7 @@ upload.post('/', async (c) => {
     }
 
     // Check file size (limit to 5MB for performance)
-    if (file.size > 5 * 1024 * 1024) {
+    if (file.size > 1024 * 1024 * 1024) {
       return c.json({ error: 'File too large. Maximum size is 5MB.' }, 400);
     }
 
@@ -52,22 +64,35 @@ upload.post('/', async (c) => {
     }
 
     // Limit row count for MVP (prevents server overload)
-    if (rows.length > 10000) {
+    if (rows.length > 1000000) {
       return c.json({ error: 'Dataset too large. Maximum 10,000 rows supported.' }, 400);
     }
 
     // Infer column types
-    const columnTypes = inferColumnTypes(rows);
-    const columns = Object.keys(rows[0]).map(name => ({
-      name,
-      type: columnTypes[name] || 'string',
-      nullable: rows.some(r => r[name] === null || r[name] === undefined || r[name] === ''),
-      unique_count: new Set(rows.map(r => r[name])).size,
-      sample_values: rows.slice(0, 3).map(r => r[name])
-    }));
+    const columnProfiles = inferColumnTypes(rows);
+    const columns: ColumnDefinition[] = Object.keys(rows[0]).map(name => {
+      const profile = columnProfiles[name];
+      const nullable = profile
+        ? profile.null_count > 0
+        : rows.some(r => r[name] === null || r[name] === undefined || r[name] === '');
+      const uniqueCount = profile?.unique_count ?? new Set(rows.map(r => r[name])).size;
+      const sampleValues = profile?.sample_values ?? rows.slice(0, 3).map(r => r[name]);
+      const columnType = profile?.base_type ?? 'string';
+      return {
+        name,
+        type: columnType,
+        semantic_type: profile?.semantic_type,
+        nullable,
+        unique_count: uniqueCount,
+        sample_values: sampleValues,
+        profile,
+      };
+    });
+
+    const db = resolveDatabase(c.env);
 
     // Create dataset record
-    const datasetResult = await c.env.DB.prepare(`
+    const datasetResult = await db.prepare(`
       INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns, analysis_status)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).bind(
@@ -80,34 +105,44 @@ upload.post('/', async (c) => {
       'analyzing'
     ).run();
 
-    const datasetId = datasetResult.meta.last_row_id as number;
+    let datasetId: number | undefined = Number(datasetResult.meta.last_row_id);
+    if (!Number.isFinite(datasetId)) {
+      const latest = await db
+        .prepare(`SELECT id FROM datasets ORDER BY id DESC`)
+        .first<{ id: number }>();
+      if (!latest?.id) {
+        throw new Error('Failed to determine dataset id after upload');
+      }
+      datasetId = latest.id;
+    }
+    const resolvedDatasetId = Number(datasetId);
 
-    // Insert data rows using D1's batch API (much faster!)
-    const statements = rows.map((row, i) => 
-      c.env.DB.prepare(`
+    // Insert data rows in batches to keep DuckDB writes efficient
+    const statements = rows.map((row, i) =>
+      db.prepare(`
         INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
         VALUES (?, ?, ?, ?)
-      `).bind(datasetId, i, JSON.stringify(row), 0)
+      `).bind(resolvedDatasetId, i, JSON.stringify(row), 0)
     );
-    
+
     // Execute in batches of 100
     const batchSize = 100;
     for (let i = 0; i < statements.length; i += batchSize) {
       const batch = statements.slice(i, i + batchSize);
-      await c.env.DB.batch(batch);
+      await db.batch(batch);
     }
 
     // Detect and store column mappings (ID -> Name relationships)
     console.log('Detecting column mappings...');
     const mappings = detectColumnMappings(columns, rows.length);
     console.log(`Detected ${mappings.length} column mappings`);
-    
+
     for (const mapping of mappings) {
-      await c.env.DB.prepare(`
+      await db.prepare(`
         INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)
         VALUES (?, ?, ?, 1)
       `).bind(
-        datasetId,
+        resolvedDatasetId,
         mapping.id_column,
         mapping.name_column
       ).run();
@@ -120,7 +155,7 @@ upload.post('/', async (c) => {
 
     return c.json({
       success: true,
-      dataset_id: datasetId,
+      dataset_id: resolvedDatasetId,
       message: 'Upload successful. Analysis started.',
       row_count: rows.length,
       column_count: columns.length,

@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.env
+.env.local
+.dev.vars
+*.log
+.DS_Store
+data/*.duckdb
+data/*.duckdb.wal
+

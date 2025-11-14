@@ -1,6 +1,9 @@
 // CSV Parser using PapaParse with Streaming Support
 
 import Papa from 'papaparse';
+import type { ColumnDefinition } from '../types';
+import type { DatabaseBinding } from '../storage/types';
+import { profileColumns } from './column-profiler';
 
 export interface ParseOptions {
   maxRows?: number;
@@ -13,14 +16,16 @@ export interface ParseOptions {
  * but we process it in chunks to avoid blocking
  */
 export function parseCSV(content: string, options: ParseOptions = {}): Record<string, any>[] {
-  const { maxRows = 10000 } = options;
-  
+  const { maxRows } = options;
+
   const result = Papa.parse(content, {
     header: true,
+    worker: true,
     dynamicTyping: true,
     skipEmptyLines: true,
     transformHeader: (header) => header.trim(),
-    preview: maxRows // Limit rows to prevent memory issues
+    // When maxRows is provided, parse only that many rows; otherwise parse all
+    preview: typeof maxRows === 'number' ? maxRows : 0
   });
 
   if (result.errors.length > 0) {
@@ -45,6 +50,7 @@ export async function parseCSVChunked(
 
     Papa.parse(content, {
       header: true,
+      worker: true,
       dynamicTyping: true,
       skipEmptyLines: true,
       transformHeader: (header) => header.trim(),
@@ -52,7 +58,7 @@ export async function parseCSVChunked(
         try {
           // Add rows to current chunk
           currentChunk.push(...(results.data as Record<string, any>[]));
-          
+
           // When chunk reaches size, process it
           if (currentChunk.length >= chunkSize) {
             parser.pause();
@@ -85,111 +91,11 @@ export async function parseCSVChunked(
   });
 }
 
-export function inferColumnTypes(rows: Record<string, any>[]): Record<string, string> {
-  if (rows.length === 0) return {};
-
-  const columns = Object.keys(rows[0]);
-  const types: Record<string, string> = {};
-
-  for (const col of columns) {
-    // Sample up to 100 rows for type inference
-    const samples = rows.slice(0, Math.min(100, rows.length)).map(r => r[col]);
-    const inferredType = inferType(samples);
-    types[col] = inferredType;
-    
-    // Log date/datetime detection for debugging
-    if (inferredType === 'date' || inferredType === 'datetime') {
-      console.log(`Detected ${inferredType} column: "${col}" (sample: "${samples[0]}")`);
-    }
+export function inferColumnTypes(rows: Record<string, any>[]): Record<string, ColumnProfile> {
+  if (!rows || rows.length === 0) {
+    return {};
   }
-
-  return types;
-}
-
-function inferType(values: any[]): string {
-  const nonNullValues = values.filter(v => v !== null && v !== undefined && v !== '');
-  
-  if (nonNullValues.length === 0) return 'string';
-
-  // PapaParse already does type conversion, so check actual types
-  const numberCount = nonNullValues.filter(v => typeof v === 'number' && !isNaN(v)).length;
-  if (numberCount === nonNullValues.length) return 'number';
-
-  const boolCount = nonNullValues.filter(v => typeof v === 'boolean').length;
-  if (boolCount === nonNullValues.length) return 'boolean';
-
-  // Enhanced date/datetime detection
-  const dateInfo = detectDateType(nonNullValues);
-  if (dateInfo.isDate && dateInfo.confidence > 0.8) {
-    return dateInfo.hasTime ? 'datetime' : 'date';
-  }
-
-  return 'string';
-}
-
-/**
- * Detect if values are dates/datetimes with confidence scoring
- */
-function detectDateType(values: any[]): { isDate: boolean; hasTime: boolean; confidence: number } {
-  if (values.length === 0) return { isDate: false, hasTime: false, confidence: 0 };
-  
-  let validDateCount = 0;
-  let hasTimeCount = 0;
-  
-  // Check for Date objects first (PapaParse might have already converted them)
-  const dateObjectCount = values.filter(v => v instanceof Date && !isNaN(v.getTime())).length;
-  if (dateObjectCount / values.length > 0.8) {
-    console.log(`Found ${dateObjectCount}/${values.length} Date objects`);
-    return { isDate: true, hasTime: false, confidence: dateObjectCount / values.length };
-  }
-  
-  const stringValues = values.filter(v => typeof v === 'string');
-  
-  if (stringValues.length === 0) {
-    // No strings and no Date objects means not a date column
-    return { isDate: false, hasTime: false, confidence: 0 };
-  }
-  
-  // Common date patterns
-  const datePatterns = [
-    /^\d{4}-\d{2}-\d{2}$/,                           // YYYY-MM-DD
-    /^\d{2}\/\d{2}\/\d{4}$/,                         // MM/DD/YYYY or DD/MM/YYYY
-    /^\d{4}\/\d{2}\/\d{2}$/,                         // YYYY/MM/DD
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,        // ISO 8601 datetime
-    /^\d{2}-\d{2}-\d{4}$/,                           // DD-MM-YYYY or MM-DD-YYYY
-    /^\d{1,2}\/\d{1,2}\/\d{2,4}$/,                  // M/D/YY or M/D/YYYY
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,       // YYYY-MM-DD HH:MM:SS
-    /^[A-Za-z]{3} \d{1,2}, \d{4}$/,                  // Jan 1, 2024
-  ];
-  
-  for (const value of stringValues) {
-    const trimmed = String(value).trim();
-    
-    // Check against patterns
-    const matchesPattern = datePatterns.some(pattern => pattern.test(trimmed));
-    
-    // Try parsing
-    const parsed = Date.parse(trimmed);
-    const isValidDate = !isNaN(parsed);
-    
-    if (isValidDate || matchesPattern) {
-      validDateCount++;
-      
-      // Check if it includes time component
-      if (trimmed.includes(':') || trimmed.includes('T') || /\d{2}:\d{2}/.test(trimmed)) {
-        hasTimeCount++;
-      }
-    }
-  }
-  
-  const confidence = validDateCount / stringValues.length;
-  const hasTime = hasTimeCount / Math.max(validDateCount, 1) > 0.5;
-  
-  return {
-    isDate: confidence > 0.8,
-    hasTime,
-    confidence
-  };
+  return profileColumns(rows);
 }
 
 /**
@@ -221,4 +127,97 @@ export function validateCSV(content: string): { valid: boolean; error?: string }
   }
 
   return { valid: true };
+}
+
+export function inspectCsv(filePath: string): Promise<{ columnDefs: ColumnDefinition[], totalRows: number }> {
+    return new Promise((resolve, reject) => {
+        let rowCount = 0;
+        let columnDefs: ColumnDefinition[] = [];
+
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            step: (results, parser) => {
+                if (rowCount === 0) {
+                    columnDefs = results.meta.fields.map(f => ({
+                        name: f,
+                        type: 'string', // Default to string, will be refined by profiling
+                    }));
+                }
+                rowCount++;
+            },
+            complete: () => {
+                resolve({ columnDefs, totalRows: rowCount });
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export function profileCsv(filePath: string, columns: ColumnDefinition[]): Promise<Record<string, any>> {
+    return new Promise((resolve, reject) => {
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            complete: (results) => {
+                const profiles = profileColumns(results.data);
+                resolve(profiles);
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export function streamCsvToDb(db: DatabaseBinding, filePath: string, datasetId: number, chunkSize: number): Promise<void> {
+    let rows: any[] = [];
+    let rowCounter = 0;
+
+    return new Promise((resolve, reject) => {
+        Papa.parse(filePath, {
+            download: true,
+            header: true,
+            skipEmptyLines: true,
+            transformHeader: (header) => header.trim(),
+            chunk: async (results, parser) => {
+                parser.pause();
+                const batch = results.data;
+                const statements = batch.map((row, idx) =>
+                    db.prepare('INSERT INTO data_rows (dataset_id, row_number, data) VALUES (?, ?, ?)')
+                      .bind(datasetId, rowCounter + idx + 1, JSON.stringify(row))
+                );
+                await db.batch(statements);
+                rowCounter += batch.length;
+                parser.resume();
+            },
+            complete: () => {
+                resolve();
+            },
+            error: (error) => {
+                reject(error);
+            }
+        });
+    });
+}
+
+export async function insertDataset(db: DatabaseBinding, name: string, type: string, rowCount: number, columns: ColumnDefinition[]): Promise<number> {
+    const result = await db.prepare(
+        `INSERT INTO datasets (name, original_filename, file_type, row_count, column_count, columns) VALUES (?, ?, ?, ?, ?, ?)`
+    ).bind(
+        name,
+        name,
+        type,
+        rowCount,
+        columns.length,
+        JSON.stringify(columns)
+    ).run();
+
+    return result.meta.last_row_id as number;
 }

@@ -41,3 +41,5 @@ Thumbs.db
 # Core dumps
 core
 core.*
+data/analysis.duckdb
+data/analysis.duckdb.wal

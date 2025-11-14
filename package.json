@@ -2,27 +2,23 @@
   "name": "webapp",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:sandbox": "wrangler pages dev dist --d1=webapp-production --local --ip 0.0.0.0 --port 3000",
-    "build": "vite build",
-    "preview": "wrangler pages dev",
-    "deploy": "npm run build && wrangler pages deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "db:migrate:local": "wrangler d1 migrations apply webapp-production --local",
-    "db:console:local": "wrangler d1 execute webapp-production --local",
-    "clean-port": "fuser -k 3000/tcp 2>/dev/null || true"
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.4.1-r.4",
+    "@hono/node-server": "^1.10.0",
     "@openai/agents": "^0.2.1",
     "agents": "^0.2.16",
+    "duckdb": "^0.10.0",
     "hono": "^4.10.2",
     "mongodb": "^6.20.0",
     "papaparse": "^5.5.3"
   },
   "devDependencies": {
-    "@hono/vite-build": "^1.2.0",
-    "@hono/vite-dev-server": "^0.18.2",
-    "vite": "^6.3.5",
-    "wrangler": "^4.4.0"
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.0"
   }
 }

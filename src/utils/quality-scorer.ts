@@ -71,22 +71,37 @@ export function scoreInsightQuality(
       break;
 
     case 'correlation':
-      const correlation = Math.abs(result.correlation || 0);
-      if (correlation > 0.8) {
+      const pearsonValue = typeof result.pearson === 'number'
+        ? result.pearson
+        : (typeof result.correlation === 'number' ? result.correlation : 0);
+      const spearmanValue = typeof result.spearman === 'number' ? result.spearman : 0;
+      const nmiValue = typeof result.normalized_mutual_information === 'number'
+        ? result.normalized_mutual_information
+        : 0;
+      const correlationStrength = result.best_strength !== undefined
+        ? Math.abs(result.best_strength)
+        : Math.max(
+            Math.abs(pearsonValue || 0),
+            Math.abs(spearmanValue || 0),
+            nmiValue || 0,
+          );
+      if (correlationStrength > 0.8) {
         score += 30;
-        reasons.push('Very strong correlation');
-      } else if (correlation > 0.6) {
+        reasons.push('Very strong dependency between metrics');
+      } else if (correlationStrength > 0.6) {
         score += 20;
-        reasons.push('Strong correlation');
-      } else if (correlation > 0.5) {
+        reasons.push('Strong dependency between metrics');
+      } else if (correlationStrength > 0.5) {
         score += 10;
-        reasons.push('Moderate correlation');
+        reasons.push('Moderate dependency between metrics');
       }
       break;
 
     case 'outlier':
       const outlierCount = result.count || 0;
-      const outlierPercent = outlierCount / (stats.count || 1);
+      const outlierPercent = result.percentage !== undefined
+        ? (result.percentage / 100)
+        : outlierCount / Math.max(stats.count || 1, 1);
       if (outlierPercent > 0.05 && outlierPercent < 0.2) {
         score += 25;
         reasons.push('Significant outliers detected');
@@ -99,12 +114,62 @@ export function scoreInsightQuality(
     case 'pattern':
       const topPattern = result.topPatterns?.[0];
       if (topPattern) {
-        const [, count] = topPattern;
-        const dominance = count / stats.count;
+        const count = Array.isArray(topPattern) ? topPattern[1] : topPattern.count || 0;
+        const dominance = topPattern.percentage !== undefined
+          ? (topPattern.percentage / 100)
+          : count / Math.max(stats.count || 1, 1);
         if (dominance > 0.3 && dominance < 0.9) {
           score += 20;
           reasons.push('Clear dominant pattern');
         }
+      }
+      break;
+
+    case 'missing':
+      const missingPercent = result.percentage !== undefined
+        ? (result.percentage / 100)
+        : (result.count || 0) / Math.max(result.total || stats.count || 1, 1);
+      if (missingPercent > 0.5) {
+        score += 25;
+        reasons.push('Extensive missing data detected');
+      } else if (missingPercent > 0.2) {
+        score += 15;
+        reasons.push('Notable rate of missing values');
+      } else if (missingPercent > 0.05) {
+        score += 5;
+        reasons.push('Some missing data requiring attention');
+      }
+      break;
+
+    case 'anomaly':
+      const anomalyShare = result.share !== undefined
+        ? (result.share / 100)
+        : (result.total_anomalies || 0) / Math.max(stats.count || 1, 1);
+      if (anomalyShare > 0.1) {
+        score += 30;
+        reasons.push('Large cluster of unusual values');
+      } else if (anomalyShare > 0.05) {
+        score += 20;
+        reasons.push('Noticeable group of anomalies');
+      } else if (anomalyShare > 0.01) {
+        score += 10;
+        reasons.push('A few standout records worth investigating');
+      }
+      break;
+
+    case 'feature':
+      const featureConfidence = result.confidence ?? 0.5;
+      score += Math.round(featureConfidence * 30);
+      reasons.push('Automatic feature engineering opportunity');
+
+      if (typeof result.expected_benefit === 'string') {
+        score += 5;
+        reasons.push('Includes clear benefit statement');
+      }
+
+      if (Array.isArray(result.columns) && result.columns.length > 1) {
+        score += 5;
+        reasons.push('Combines multiple columns for richer context');
       }
       break;
 
