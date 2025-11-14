@@ -1323,6 +1323,344 @@ function closeRecommendationsModal() {
     }
 }
 
+// Generate and display anomaly explanations
+async function generateAnomalyExplanations() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-anomaly-explanations-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Explaining...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/anomaly-explanations`);
+        displayAnomalyExplanations(response.data);
+    } catch (error) {
+        console.error('Failed to generate anomaly explanations:', error);
+        alert('Failed to generate anomaly explanations. No anomalies detected or error occurred.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-question-circle mr-2"></i>Explain Anomalies';
+        }
+    }
+}
+
+// Display anomaly explanations in modal
+function displayAnomalyExplanations(data) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Cause type colors and icons
+    const causeStyles = {
+        'data_entry_error': { icon: 'keyboard', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)' },
+        'measurement_error': { icon: 'ruler', color: '#f97316', bg: 'rgba(249, 115, 22, 0.1)' },
+        'natural_variation': { icon: 'wave-square', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)' },
+        'systemic_issue': { icon: 'network-wired', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.1)' },
+        'seasonal_pattern': { icon: 'calendar-alt', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.1)' },
+        'data_corruption': { icon: 'bug', color: '#be123c', bg: 'rgba(190, 18, 60, 0.1)' },
+        'edge_case': { icon: 'star', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)' },
+        'legitimate_outlier': { icon: 'check-circle', color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.1)' }
+    };
+
+    // Summary stats
+    const summaryHtml = `
+        <div class="grid grid-cols-4 gap-3 mb-6">
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['data_entry_error'].bg}; border: 2px solid ${causeStyles['data_entry_error'].color};">
+                <i class="fas fa-${causeStyles['data_entry_error'].icon} text-xl mb-2" style="color: ${causeStyles['data_entry_error'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.dataEntryErrors}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Data Entry Errors</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['measurement_error'].bg}; border: 2px solid ${causeStyles['measurement_error'].color};">
+                <i class="fas fa-${causeStyles['measurement_error'].icon} text-xl mb-2" style="color: ${causeStyles['measurement_error'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.measurementErrors}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Measurement Errors</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['natural_variation'].bg}; border: 2px solid ${causeStyles['natural_variation'].color};">
+                <i class="fas fa-${causeStyles['natural_variation'].icon} text-xl mb-2" style="color: ${causeStyles['natural_variation'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.naturalVariation}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Natural Variation</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['systemic_issue'].bg}; border: 2px solid ${causeStyles['systemic_issue'].color};">
+                <i class="fas fa-${causeStyles['systemic_issue'].icon} text-xl mb-2" style="color: ${causeStyles['systemic_issue'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.systemicIssues}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Systemic Issues</div>
+            </div>
+        </div>
+    `;
+
+    // Explanation cards
+    const explanationsHtml = data.explanations.map(exp => {
+        const causeStyle = causeStyles[exp.primaryCause.type] || causeStyles['legitimate_outlier'];
+        const confidencePercent = Math.round(exp.confidence * 100);
+
+        return `
+            <div class="neu-card p-5 mb-4" style="border-left: 4px solid ${causeStyle.color};">
+                <!-- Header -->
+                <div class="flex items-start justify-between gap-3 mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-lg font-bold" style="color: var(--text-primary);">
+                                ${exp.columnName}: ${typeof exp.value === 'number' ? exp.value.toFixed(2) : exp.value}
+                            </span>
+                            <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                  style="background: ${causeStyle.bg}; color: ${causeStyle.color};">
+                                ANOMALY
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--text-secondary);">Confidence</div>
+                        <div class="text-2xl font-bold" style="color: ${causeStyle.color};">${confidencePercent}%</div>
+                    </div>
+                </div>
+
+                <!-- Primary Cause -->
+                <div class="p-4 rounded-lg mb-3" style="background: ${causeStyle.bg}; border: 2px solid ${causeStyle.color};">
+                    <div class="flex items-center gap-2 mb-2">
+                        <i class="fas fa-${causeStyle.icon}" style="color: ${causeStyle.color};"></i>
+                        <span class="font-bold" style="color: var(--text-primary);">${exp.primaryCause.name}</span>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background: ${causeStyle.color}; color: white;">
+                            ${Math.round(exp.primaryCause.probability * 100)}% likely
+                        </span>
+                    </div>
+                    <p class="text-sm mb-3" style="color: var(--text-primary);">${exp.primaryCause.explanation}</p>
+
+                    <!-- Evidence -->
+                    ${exp.primaryCause.evidence.length > 0 ? `
+                        <div class="mt-2">
+                            <div class="text-xs font-semibold mb-1" style="color: var(--text-secondary);">Evidence:</div>
+                            <ul class="text-xs space-y-1">
+                                ${exp.primaryCause.evidence.map(ev => `
+                                    <li class="flex items-start gap-2">
+                                        <span class="px-1.5 py-0.5 rounded text-xs font-semibold"
+                                              style="background: ${ev.strength === 'strong' ? '#16a34a' : ev.strength === 'moderate' ? '#f59e0b' : '#64748b'}; color: white;">
+                                            ${ev.strength.toUpperCase()}
+                                        </span>
+                                        <span style="color: var(--text-secondary);">${ev.description}</span>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <!-- Alternative Causes -->
+                ${exp.alternativeCauses.length > 0 ? `
+                    <details class="mb-3">
+                        <summary class="cursor-pointer text-sm font-semibold mb-2" style="color: var(--accent);">
+                            Alternative Explanations (${exp.alternativeCauses.length})
+                        </summary>
+                        <div class="space-y-2 ml-4">
+                            ${exp.alternativeCauses.map(alt => {
+                                const altStyle = causeStyles[alt.type] || causeStyles['legitimate_outlier'];
+                                return `
+                                    <div class="p-2 rounded" style="background: ${altStyle.bg}; border-left: 2px solid ${altStyle.color};">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <i class="fas fa-${altStyle.icon} text-xs" style="color: ${altStyle.color};"></i>
+                                            <span class="text-sm font-semibold" style="color: var(--text-primary);">${alt.name}</span>
+                                            <span class="text-xs" style="color: var(--text-secondary);">(${Math.round(alt.probability * 100)}%)</span>
+                                        </div>
+                                        <p class="text-xs" style="color: var(--text-secondary);">${alt.explanation}</p>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </details>
+                ` : ''}
+
+                <!-- Contextual Factors -->
+                ${exp.contextualFactors.length > 0 ? `
+                    <div class="mb-3">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--text-secondary);">Context:</div>
+                        <div class="flex flex-wrap gap-2">
+                            ${exp.contextualFactors.map(factor => {
+                                const impactColor = factor.impact === 'increases_likelihood' ? '#ef4444' :
+                                                  factor.impact === 'decreases_likelihood' ? '#10b981' : '#64748b';
+                                return `
+                                    <span class="text-xs px-2 py-1 rounded" style="background: rgba(0,0,0,0.05); color: ${impactColor};"
+                                          title="${factor.description}">
+                                        ${factor.factor}
+                                        ${factor.impact === 'increases_likelihood' ? '↑' : factor.impact === 'decreases_likelihood' ? '↓' : '•'}
+                                    </span>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <!-- Actionable Insights -->
+                ${exp.actionableInsights.length > 0 ? `
+                    <div class="p-3 rounded mb-3" style="background: rgba(59, 130, 246, 0.1);">
+                        <div class="text-sm font-semibold mb-1" style="color: #2563eb;">
+                            <i class="fas fa-lightbulb mr-1"></i>Insights:
+                        </div>
+                        <ul class="text-xs space-y-1">
+                            ${exp.actionableInsights.map(insight => `
+                                <li style="color: var(--text-primary);">• ${insight}</li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+
+                <!-- Recommended Actions -->
+                <div class="flex flex-wrap gap-2">
+                    ${exp.recommendedActions.map(action => getExplanationActionButton(action, exp)).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        <i class="fas fa-question-circle mr-2" style="color: var(--accent);"></i>
+                        Anomaly Explanations
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${data.datasetName} | ${data.explainedAnomalies} of ${data.totalAnomalies} anomalies explained |
+                        Generated: ${new Date(data.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeExplanationsModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Summary -->
+            ${summaryHtml}
+
+            <!-- Explanations -->
+            <div>
+                <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                    Detailed Explanations
+                </h3>
+                ${explanationsHtml}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeExplanationsModal();
+        }
+    });
+}
+
+// Get action button for explanation
+function getExplanationActionButton(action, explanation) {
+    const actionIcons = {
+        'investigate': 'search',
+        'correct': 'edit',
+        'flag': 'flag',
+        'accept': 'check',
+        'review_similar': 'copy'
+    };
+
+    const actionColors = {
+        'investigate': '#3b82f6',
+        'correct': '#ef4444',
+        'flag': '#f59e0b',
+        'accept': '#10b981',
+        'review_similar': '#8b5cf6'
+    };
+
+    const icon = actionIcons[action.actionType] || 'hand-pointer';
+    const color = actionColors[action.actionType] || 'var(--accent)';
+
+    return `
+        <button onclick="executeExplanationAction('${action.actionType}', '${explanation.columnName}', ${explanation.value})"
+                class="neu-button px-3 py-1 text-xs"
+                style="color: ${color};"
+                title="${action.description}">
+            <i class="fas fa-${icon} mr-1"></i>${action.action}
+        </button>
+    `;
+}
+
+// Execute explanation action
+async function executeExplanationAction(actionType, columnName, value) {
+    closeExplanationsModal();
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'investigate':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = columnName;
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Investigate Anomaly',
+                    `Searching for insights related to "${columnName}". Review anomaly detection results and statistical patterns.`
+                );
+            }
+            break;
+
+        case 'correct':
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Correct Anomaly',
+                    `Opening data cleaner for "${columnName}". Locate and correct the anomalous value: ${value}.`
+                );
+            }
+            break;
+
+        case 'flag':
+            showActionGuide(
+                'Flag for Review',
+                `Anomaly in "${columnName}" (value: ${value}) flagged for manual review. Consider documenting this for future reference.`
+            );
+            break;
+
+        case 'accept':
+            showActionGuide(
+                'Accept Anomaly',
+                `Anomaly in "${columnName}" (value: ${value}) accepted as legitimate. Consider using robust statistical methods that handle outliers.`
+            );
+            break;
+
+        case 'review_similar':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                showActionGuide(
+                    'Review Similar Cases',
+                    `Check statistics for "${columnName}" to find similar anomalous values. Look for patterns in the distribution.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Anomaly Action',
+                `Perform recommended action for "${columnName}" anomaly (value: ${value}).`
+            );
+    }
+}
+
+// Close explanations modal
+function closeExplanationsModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Anomaly Explanations')) {
+        modal.remove();
+    }
+}
+
 // Add action buttons to dataset info
 function addAdvancedFeatureButtons() {
     const container = document.getElementById('dataset-info');
@@ -1347,6 +1685,9 @@ function addAdvancedFeatureButtons() {
                 <button id="generate-recommendations-btn" onclick="generateColumnRecommendations()" class="neu-button px-4 py-2">
                     <i class="fas fa-lightbulb mr-2"></i>Column Recommendations
                 </button>
+                <button id="generate-anomaly-explanations-btn" onclick="generateAnomalyExplanations()" class="neu-button px-4 py-2">
+                    <i class="fas fa-question-circle mr-2"></i>Explain Anomalies
+                </button>
             </div>
         </div>
     `;
@@ -1359,12 +1700,15 @@ window.generateStoryboard = generateStoryboard;
 window.generateTheories = generateTheories;
 window.generateQualityScorecard = generateQualityScorecard;
 window.generateColumnRecommendations = generateColumnRecommendations;
+window.generateAnomalyExplanations = generateAnomalyExplanations;
 window.closeStoryboardModal = closeStoryboardModal;
 window.closeTheoriesModal = closeTheoriesModal;
 window.closeScorecardModal = closeScorecardModal;
 window.closeRecommendationsModal = closeRecommendationsModal;
+window.closeExplanationsModal = closeExplanationsModal;
 window.downloadStoryboardMarkdown = downloadStoryboardMarkdown;
 window.addAdvancedFeatureButtons = addAdvancedFeatureButtons;
 window.executeTheoryAction = executeTheoryAction;
 window.executeScorecardAction = executeScorecardAction;
 window.executeRecommendationAction = executeRecommendationAction;
+window.executeExplanationAction = executeExplanationAction;

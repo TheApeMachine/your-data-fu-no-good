@@ -7,6 +7,7 @@ import { resolveDatabase } from '../storage';
 import { generateStoryboard, exportStoryboardAsMarkdown } from '../utils/storyboard-generator';
 import { generateQualityScorecard } from '../utils/quality-scorecard';
 import { generateColumnRecommendations } from '../utils/column-recommendations';
+import { generateAnomalyExplanations } from '../utils/anomaly-explainer';
 
 function safeParseJson(value: unknown): unknown {
   if (value && typeof value === 'object') {
@@ -553,6 +554,29 @@ datasets.get('/:id/column-recommendations', async (c) => {
   } catch (error) {
     console.error('Failed to generate column recommendations:', error);
     return c.json({ error: 'Failed to generate column recommendations' }, 500);
+  }
+});
+
+// Generate anomaly explanations for dataset
+datasets.get('/:id/anomaly-explanations', async (c) => {
+  try {
+    const db = resolveDatabase(c.env);
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id)) {
+      return c.json({ error: 'Invalid dataset ID' }, 400);
+    }
+
+    const explanations = await generateAnomalyExplanations(db, id);
+
+    if (!explanations) {
+      return c.json({ error: 'Failed to generate anomaly explanations - dataset not found or no anomalies detected' }, 404);
+    }
+
+    return c.json(explanations);
+  } catch (error) {
+    console.error('Failed to generate anomaly explanations:', error);
+    return c.json({ error: 'Failed to generate anomaly explanations' }, 500);
   }
 });
 
