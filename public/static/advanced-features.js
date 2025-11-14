@@ -599,6 +599,730 @@ function getEvidenceStrengthColor(strength) {
     }
 }
 
+// Generate and display quality scorecard
+async function generateQualityScorecard() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-scorecard-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Analyzing...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/quality-scorecard`);
+        displayQualityScorecard(response.data);
+    } catch (error) {
+        console.error('Failed to generate quality scorecard:', error);
+        alert('Failed to generate quality scorecard. Please try again.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-chart-bar mr-2"></i>Quality Scorecard';
+        }
+    }
+}
+
+// Display quality scorecard in modal
+function displayQualityScorecard(scorecard) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Grade colors
+    const gradeColors = {
+        'A': { bg: 'rgba(34, 197, 94, 0.2)', text: '#16a34a', border: '#16a34a' },
+        'B': { bg: 'rgba(59, 130, 246, 0.2)', text: '#2563eb', border: '#2563eb' },
+        'C': { bg: 'rgba(245, 158, 11, 0.2)', text: '#d97706', border: '#d97706' },
+        'D': { bg: 'rgba(249, 115, 22, 0.2)', text: '#ea580c', border: '#ea580c' },
+        'F': { bg: 'rgba(239, 68, 68, 0.2)', text: '#dc2626', border: '#dc2626' }
+    };
+
+    const healthStatusText = {
+        'excellent': '🎉 Excellent',
+        'good': '✅ Good',
+        'fair': '⚠️ Fair',
+        'poor': '❌ Poor',
+        'critical': '🚨 Critical'
+    };
+
+    const overallGrade = gradeColors[scorecard.overallGrade];
+
+    // Dimension cards
+    const dimensionsHtml = Object.entries(scorecard.dimensions).map(([name, dimension]) => {
+        const gradeStyle = gradeColors[dimension.grade];
+        const issuesHtml = dimension.issues.length > 0 ? `
+            <div class="mt-4 space-y-2">
+                <div class="text-sm font-semibold" style="color: var(--text-primary);">Issues (${dimension.issues.length}):</div>
+                ${dimension.issues.map((issue, index) => {
+                    const severityColors = {
+                        'critical': { bg: 'rgba(239, 68, 68, 0.15)', text: '#dc2626' },
+                        'high': { bg: 'rgba(249, 115, 22, 0.15)', text: '#ea580c' },
+                        'medium': { bg: 'rgba(245, 158, 11, 0.15)', text: '#d97706' },
+                        'low': { bg: 'rgba(59, 130, 246, 0.15)', text: '#2563eb' }
+                    };
+                    const severityStyle = severityColors[issue.severity];
+
+                    return `
+                        <div class="p-3 rounded-lg" style="background: rgba(0, 0, 0, 0.05); border-left: 3px solid ${severityStyle.text};">
+                            <div class="flex items-start justify-between gap-2 mb-2">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                              style="background: ${severityStyle.bg}; color: ${severityStyle.text};">
+                                            ${issue.severity.toUpperCase()}
+                                        </span>
+                                        <span class="text-sm font-semibold" style="color: var(--text-primary);">
+                                            ${issue.description}
+                                        </span>
+                                    </div>
+                                    <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                        <strong>Impact:</strong> ${issue.impact}
+                                    </div>
+                                    <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                        <strong>Recommendation:</strong> ${issue.recommendation}
+                                    </div>
+                                    ${issue.affectedColumns.length > 0 ? `
+                                        <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            <strong>Affected:</strong> ${issue.affectedColumns.join(', ')}
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                ${issue.actionable ? getScorecardActionButton(issue, name) : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        ` : `<div class="mt-4 text-sm" style="color: var(--text-secondary);">No issues detected</div>`;
+
+        const strengthsHtml = dimension.strengths.length > 0 ? `
+            <div class="mt-3">
+                <div class="text-sm font-semibold mb-1" style="color: var(--accent);">Strengths:</div>
+                <ul class="text-xs space-y-1" style="color: var(--text-secondary);">
+                    ${dimension.strengths.map(s => `<li>✓ ${s}</li>`).join('')}
+                </ul>
+            </div>
+        ` : '';
+
+        return `
+            <div class="neu-card p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <h4 class="text-lg font-bold" style="color: var(--text-primary);">${dimension.name}</h4>
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl font-bold" style="color: ${gradeStyle.text};">${dimension.score}</span>
+                        <span class="px-3 py-1 rounded text-lg font-bold"
+                              style="background: ${gradeStyle.bg}; color: ${gradeStyle.text}; border: 2px solid ${gradeStyle.border};">
+                            ${dimension.grade}
+                        </span>
+                    </div>
+                </div>
+                ${strengthsHtml}
+                ${issuesHtml}
+            </div>
+        `;
+    }).join('');
+
+    // Priority recommendations
+    const recommendationsHtml = scorecard.recommendations.length > 0 ? `
+        <div class="neu-card p-6 mt-6">
+            <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                <i class="fas fa-list-ol mr-2" style="color: var(--accent);"></i>Priority Recommendations
+            </h3>
+            <div class="space-y-3">
+                ${scorecard.recommendations.map(rec => {
+                    const effortColors = {
+                        'low': { bg: 'rgba(34, 197, 94, 0.15)', text: '#16a34a' },
+                        'medium': { bg: 'rgba(245, 158, 11, 0.15)', text: '#d97706' },
+                        'high': { bg: 'rgba(239, 68, 68, 0.15)', text: '#dc2626' }
+                    };
+                    const effortStyle = effortColors[rec.effort];
+
+                    return `
+                        <div class="p-4 rounded-lg" style="background: rgba(0, 0, 0, 0.05);">
+                            <div class="flex items-start gap-3">
+                                <span class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-white"
+                                      style="background: var(--accent);">
+                                    ${rec.priority}
+                                </span>
+                                <div class="flex-1">
+                                    <div class="font-semibold mb-1" style="color: var(--text-primary);">${rec.title}</div>
+                                    <div class="text-sm mb-2" style="color: var(--text-secondary);">${rec.description}</div>
+                                    <div class="flex items-center gap-4 text-xs">
+                                        <span style="color: var(--text-secondary);">
+                                            <strong>Expected Improvement:</strong> +${rec.expectedImprovement} points
+                                        </span>
+                                        <span class="px-2 py-0.5 rounded" style="background: ${effortStyle.bg}; color: ${effortStyle.text};">
+                                            ${rec.effort.toUpperCase()} EFFORT
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    ` : '';
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        Data Quality Scorecard
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${scorecard.datasetName} | Generated: ${new Date(scorecard.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeScorecardModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Overall Score -->
+            <div class="neu-card p-6 mb-6" style="background: ${overallGrade.bg}; border: 3px solid ${overallGrade.border};">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-xl font-bold mb-2" style="color: var(--text-primary);">Overall Data Quality</h3>
+                        <div class="text-lg" style="color: var(--text-primary);">
+                            Status: <strong>${healthStatusText[scorecard.healthStatus]}</strong>
+                        </div>
+                        <div class="text-sm mt-2" style="color: var(--text-secondary);">
+                            ${scorecard.summary.totalIssues} issues found
+                            (${scorecard.summary.criticalIssues} critical,
+                            ${scorecard.summary.highIssues} high,
+                            ${scorecard.summary.mediumIssues} medium,
+                            ${scorecard.summary.lowIssues} low) |
+                            ${scorecard.summary.actionableIssues} actionable
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-6xl font-bold mb-2" style="color: ${overallGrade.text};">
+                            ${scorecard.overallScore}
+                        </div>
+                        <div class="px-6 py-2 rounded-lg text-3xl font-bold"
+                             style="background: ${overallGrade.bg}; color: ${overallGrade.text}; border: 3px solid ${overallGrade.border};">
+                            ${scorecard.overallGrade}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dimensions -->
+            <div class="grid grid-cols-1 gap-4 mb-6">
+                ${dimensionsHtml}
+            </div>
+
+            <!-- Recommendations -->
+            ${recommendationsHtml}
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeScorecardModal();
+        }
+    });
+}
+
+// Get action button for scorecard issue
+function getScorecardActionButton(issue, dimension) {
+    const actionType = issue.actionType || 'manual_review';
+
+    const buttons = {
+        'clean_missing': {
+            icon: 'broom',
+            label: 'Clean Data',
+            color: 'var(--accent)'
+        },
+        'remove_duplicates': {
+            icon: 'clone',
+            label: 'Remove Duplicates',
+            color: '#f59e0b'
+        },
+        'fix_outliers': {
+            icon: 'exclamation-triangle',
+            label: 'Fix Outliers',
+            color: '#ef4444'
+        },
+        'validate_range': {
+            icon: 'check-circle',
+            label: 'Validate',
+            color: '#10b981'
+        },
+        'check_consistency': {
+            icon: 'balance-scale',
+            label: 'Check Consistency',
+            color: '#3b82f6'
+        },
+        'standardize_format': {
+            icon: 'align-left',
+            label: 'Standardize',
+            color: '#8b5cf6'
+        }
+    };
+
+    const buttonConfig = buttons[actionType] || { icon: 'tools', label: 'Fix', color: 'var(--accent)' };
+
+    return `
+        <button onclick="executeScorecardAction('${actionType}', ${JSON.stringify(issue.affectedColumns)}, '${dimension}')"
+                class="neu-button px-3 py-1 text-xs flex-shrink-0"
+                style="color: ${buttonConfig.color};">
+            <i class="fas fa-${buttonConfig.icon} mr-1"></i>${buttonConfig.label}
+        </button>
+    `;
+}
+
+// Execute scorecard action
+async function executeScorecardAction(actionType, affectedColumns, dimension) {
+    closeScorecardModal();
+
+    // Small delay for smooth transition
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'clean_missing':
+            // Navigate to data cleaner with focus on affected columns
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Data Cleaning',
+                    `Focus on missing data in: ${affectedColumns.join(', ')}. Use the data cleaner to impute or remove missing values.`
+                );
+            }
+            break;
+
+        case 'remove_duplicates':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = 'duplicate';
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Duplicate Detection',
+                    `Searching for duplicate-related insights. Review the findings and use data cleaning tools to remove duplicates.`
+                );
+            }
+            break;
+
+        case 'fix_outliers':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                // Highlight affected columns in statistics view
+                showActionGuide(
+                    'Outlier Analysis',
+                    `Review outliers in: ${affectedColumns.join(', ')}. Check the statistics and distribution charts to understand outlier patterns.`
+                );
+            }
+            break;
+
+        case 'validate_range':
+            const statisticsTab = document.querySelector('[data-tab="statistics"]');
+            if (statisticsTab) {
+                statisticsTab.click();
+                showActionGuide(
+                    'Range Validation',
+                    `Check value ranges for: ${affectedColumns.join(', ')}. Look at min/max values and consider applying filters or corrections.`
+                );
+            }
+            break;
+
+        case 'check_consistency':
+            const graphTab = document.querySelector('[data-tab="graph"]');
+            if (graphTab) {
+                graphTab.click();
+                showActionGuide(
+                    'Consistency Check',
+                    `Review correlations between: ${affectedColumns.join(', ')}. High correlation may indicate redundant variables. Consider dimensionality reduction (PCA).`
+                );
+            }
+            break;
+
+        case 'standardize_format':
+            const cleanTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanTab) {
+                cleanTab.click();
+                showActionGuide(
+                    'Format Standardization',
+                    `Standardize formats for: ${affectedColumns.join(', ')}. Use data transformation tools to ensure consistent formatting.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Manual Review Required',
+                `Please review the following columns: ${affectedColumns.join(', ')}. This issue may require manual investigation and correction.`
+            );
+    }
+}
+
+// Close scorecard modal
+function closeScorecardModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Data Quality Scorecard')) {
+        modal.remove();
+    }
+}
+
+// Generate and display column recommendations
+async function generateColumnRecommendations() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-recommendations-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Analyzing...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/column-recommendations`);
+        displayColumnRecommendations(response.data);
+    } catch (error) {
+        console.error('Failed to generate column recommendations:', error);
+        alert('Failed to generate column recommendations. Please try again.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-lightbulb mr-2"></i>Column Recommendations';
+        }
+    }
+}
+
+// Display column recommendations in modal
+function displayColumnRecommendations(data) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Priority colors
+    const priorityColors = {
+        'critical': { bg: 'rgba(239, 68, 68, 0.2)', text: '#dc2626', border: '#dc2626' },
+        'high': { bg: 'rgba(249, 115, 22, 0.2)', text: '#ea580c', border: '#ea580c' },
+        'medium': { bg: 'rgba(245, 158, 11, 0.2)', text: '#d97706', border: '#d97706' },
+        'low': { bg: 'rgba(59, 130, 246, 0.2)', text: '#2563eb', border: '#2563eb' }
+    };
+
+    // Category icons and names
+    const categoryInfo = {
+        'key_driver': { icon: 'star', name: 'Key Driver', color: '#f59e0b' },
+        'quality_concern': { icon: 'exclamation-triangle', name: 'Quality Concern', color: '#ef4444' },
+        'high_information': { icon: 'info-circle', name: 'High Information', color: '#3b82f6' },
+        'predictive': { icon: 'chart-line', name: 'Predictive', color: '#8b5cf6' },
+        'anomalous': { icon: 'search', name: 'Anomalous', color: '#ec4899' },
+        'unique_identifier': { icon: 'key', name: 'Unique ID', color: '#64748b' },
+        'explore_further': { icon: 'compass', name: 'Explore Further', color: '#10b981' }
+    };
+
+    // Focus columns section
+    const focusColumnsHtml = data.focusColumns.length > 0 ? `
+        <div class="neu-card p-6 mb-6" style="background: rgba(59, 130, 246, 0.1); border: 2px solid #3b82f6;">
+            <h3 class="text-xl font-bold mb-3" style="color: var(--text-primary);">
+                <i class="fas fa-bullseye mr-2" style="color: #3b82f6;"></i>Focus on These Columns
+            </h3>
+            <p class="text-sm mb-3" style="color: var(--text-secondary);">
+                These ${data.focusColumns.length} columns deserve your immediate attention based on their information content, quality, and predictive power.
+            </p>
+            <div class="flex flex-wrap gap-2">
+                ${data.focusColumns.map(col => `
+                    <span class="px-3 py-1 rounded-full font-semibold" style="background: rgba(59, 130, 246, 0.2); color: #2563eb;">
+                        ${col}
+                    </span>
+                `).join('')}
+            </div>
+        </div>
+    ` : '';
+
+    // Recommendations cards
+    const recommendationsHtml = data.recommendations.map(rec => {
+        const priorityStyle = priorityColors[rec.priority];
+        const catInfo = categoryInfo[rec.category];
+
+        return `
+            <div class="neu-card p-5 mb-4" style="border-left: 4px solid ${catInfo.color};">
+                <div class="flex items-start justify-between gap-3 mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-2xl font-bold" style="color: var(--text-primary);">${rec.columnName}</span>
+                            <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                  style="background: ${priorityStyle.bg}; color: ${priorityStyle.text};">
+                                ${rec.priority.toUpperCase()}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2 mb-2">
+                            <i class="fas fa-${catInfo.icon}" style="color: ${catInfo.color};"></i>
+                            <span class="text-sm font-semibold" style="color: ${catInfo.color};">${catInfo.name}</span>
+                            <span class="text-sm" style="color: var(--text-secondary);">•</span>
+                            <span class="text-sm font-bold" style="color: var(--accent);">Score: ${rec.score}/100</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-col items-end gap-1">
+                        <div class="w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl"
+                             style="background: ${priorityStyle.bg}; color: ${priorityStyle.text}; border: 3px solid ${priorityStyle.border};">
+                            ${rec.score}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reasoning -->
+                <div class="mb-3 p-3 rounded" style="background: rgba(0, 0, 0, 0.05);">
+                    <p class="text-sm" style="color: var(--text-primary);">${rec.reasoning}</p>
+                </div>
+
+                <!-- Metrics -->
+                <div class="grid grid-cols-5 gap-2 mb-3">
+                    ${Object.entries(rec.metrics).map(([name, value]) => {
+                        const percentage = Math.round(value * 100);
+                        const barColor = percentage >= 70 ? '#10b981' : percentage >= 40 ? '#f59e0b' : '#ef4444';
+                        return `
+                            <div>
+                                <div class="text-xs mb-1" style="color: var(--text-secondary);">
+                                    ${name.replace(/([A-Z])/g, ' $1').trim()}
+                                </div>
+                                <div class="h-2 rounded-full" style="background: rgba(0, 0, 0, 0.1);">
+                                    <div class="h-full rounded-full" style="width: ${percentage}%; background: ${barColor};"></div>
+                                </div>
+                                <div class="text-xs font-semibold mt-0.5" style="color: ${barColor};">${percentage}%</div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+
+                <!-- Insights -->
+                ${rec.insights.length > 0 ? `
+                    <div class="mb-3">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--accent);">Key Insights:</div>
+                        <ul class="text-xs space-y-1" style="color: var(--text-secondary);">
+                            ${rec.insights.map(insight => `<li>• ${insight}</li>`).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+
+                <!-- Actions -->
+                <div class="flex flex-wrap gap-2">
+                    ${rec.actions.map(action => getRecommendationActionButton(action, rec.columnName)).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Summary stats
+    const summaryHtml = `
+        <div class="grid grid-cols-5 gap-3 mb-6">
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-star text-2xl mb-2" style="color: #f59e0b;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.keyDrivers}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Key Drivers</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-exclamation-triangle text-2xl mb-2" style="color: #ef4444;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.qualityConcerns}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Quality Issues</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-info-circle text-2xl mb-2" style="color: #3b82f6;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.highInformation}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">High Info</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-chart-line text-2xl mb-2" style="color: #8b5cf6;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.predictive}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Predictive</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-search text-2xl mb-2" style="color: #ec4899;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.anomalous}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Anomalous</div>
+            </div>
+        </div>
+    `;
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        <i class="fas fa-lightbulb mr-2" style="color: var(--accent);"></i>
+                        Column Recommendations
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${data.datasetName} | ${data.totalColumns} columns analyzed | Generated: ${new Date(data.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeRecommendationsModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Summary Stats -->
+            ${summaryHtml}
+
+            <!-- Focus Columns -->
+            ${focusColumnsHtml}
+
+            <!-- Recommendations -->
+            <div class="mb-4">
+                <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                    Detailed Recommendations
+                </h3>
+                ${recommendationsHtml}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeRecommendationsModal();
+        }
+    });
+}
+
+// Get action button for recommendation
+function getRecommendationActionButton(action, columnName) {
+    const actionIcons = {
+        'explore_stats': 'chart-bar',
+        'view_distribution': 'chart-area',
+        'check_correlations': 'project-diagram',
+        'investigate_outliers': 'exclamation-circle',
+        'clean_data': 'broom',
+        'feature_engineering': 'cogs'
+    };
+
+    const actionColors = {
+        'explore_stats': '#3b82f6',
+        'view_distribution': '#10b981',
+        'check_correlations': '#8b5cf6',
+        'investigate_outliers': '#ef4444',
+        'clean_data': '#f59e0b',
+        'feature_engineering': '#ec4899'
+    };
+
+    const icon = actionIcons[action.actionType] || 'hand-pointer';
+    const color = actionColors[action.actionType] || 'var(--accent)';
+
+    return `
+        <button onclick="executeRecommendationAction('${action.actionType}', '${columnName}')"
+                class="neu-button px-3 py-1 text-xs"
+                style="color: ${color};"
+                title="${action.description}">
+            <i class="fas fa-${icon} mr-1"></i>${action.action}
+        </button>
+    `;
+}
+
+// Execute recommendation action
+async function executeRecommendationAction(actionType, columnName) {
+    closeRecommendationsModal();
+
+    // Small delay for smooth transition
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'explore_stats':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                // Try to find and highlight the column in statistics
+                setTimeout(() => {
+                    showActionGuide(
+                        'Column Statistics',
+                        `Reviewing statistics for "${columnName}". Look for mean, median, standard deviation, and distribution shape.`
+                    );
+                }, 300);
+            }
+            break;
+
+        case 'view_distribution':
+            const distributionTab = document.querySelector('[data-tab="statistics"]');
+            if (distributionTab) {
+                distributionTab.click();
+                showActionGuide(
+                    'Distribution Analysis',
+                    `Analyzing distribution for "${columnName}". Check the histogram and box plot for patterns, skewness, and outliers.`
+                );
+            }
+            break;
+
+        case 'check_correlations':
+            const graphTab = document.querySelector('[data-tab="graph"]');
+            if (graphTab) {
+                graphTab.click();
+                showActionGuide(
+                    'Correlation Analysis',
+                    `Exploring correlations for "${columnName}". Look for strong connections in the network graph and correlation matrix.`
+                );
+            }
+            break;
+
+        case 'investigate_outliers':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = columnName;
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Outlier Investigation',
+                    `Searching for outlier insights related to "${columnName}". Review anomaly detection results and statistical outliers.`
+                );
+            }
+            break;
+
+        case 'clean_data':
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Data Cleaning',
+                    `Opening data cleaner for "${columnName}". Use tools to handle missing values, outliers, and formatting issues.`
+                );
+            }
+            break;
+
+        case 'feature_engineering':
+            const featuresTab = document.querySelector('[data-tab="features"]');
+            if (featuresTab) {
+                featuresTab.click();
+                showActionGuide(
+                    'Feature Engineering',
+                    `Exploring feature engineering for "${columnName}". Consider creating derived features like bins, logs, or interactions.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Column Analysis',
+                `Analyzing "${columnName}". Use the various tabs to explore this column's properties and relationships.`
+            );
+    }
+}
+
+// Close recommendations modal
+function closeRecommendationsModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Column Recommendations')) {
+        modal.remove();
+    }
+}
+
 // Add action buttons to dataset info
 function addAdvancedFeatureButtons() {
     const container = document.getElementById('dataset-info');
@@ -617,6 +1341,12 @@ function addAdvancedFeatureButtons() {
                 <button id="generate-theories-btn" onclick="generateTheories()" class="neu-button px-4 py-2">
                     <i class="fas fa-flask mr-2"></i>Generate Theories
                 </button>
+                <button id="generate-scorecard-btn" onclick="generateQualityScorecard()" class="neu-button px-4 py-2">
+                    <i class="fas fa-chart-bar mr-2"></i>Quality Scorecard
+                </button>
+                <button id="generate-recommendations-btn" onclick="generateColumnRecommendations()" class="neu-button px-4 py-2">
+                    <i class="fas fa-lightbulb mr-2"></i>Column Recommendations
+                </button>
             </div>
         </div>
     `;
@@ -627,8 +1357,14 @@ function addAdvancedFeatureButtons() {
 // Make functions globally accessible
 window.generateStoryboard = generateStoryboard;
 window.generateTheories = generateTheories;
+window.generateQualityScorecard = generateQualityScorecard;
+window.generateColumnRecommendations = generateColumnRecommendations;
 window.closeStoryboardModal = closeStoryboardModal;
 window.closeTheoriesModal = closeTheoriesModal;
+window.closeScorecardModal = closeScorecardModal;
+window.closeRecommendationsModal = closeRecommendationsModal;
 window.downloadStoryboardMarkdown = downloadStoryboardMarkdown;
 window.addAdvancedFeatureButtons = addAdvancedFeatureButtons;
 window.executeTheoryAction = executeTheoryAction;
+window.executeScorecardAction = executeScorecardAction;
+window.executeRecommendationAction = executeRecommendationAction;

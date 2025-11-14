@@ -5,6 +5,8 @@ import { Hono } from 'hono';
 import type { Bindings } from '../types';
 import { resolveDatabase } from '../storage';
 import { generateStoryboard, exportStoryboardAsMarkdown } from '../utils/storyboard-generator';
+import { generateQualityScorecard } from '../utils/quality-scorecard';
+import { generateColumnRecommendations } from '../utils/column-recommendations';
 
 function safeParseJson(value: unknown): unknown {
   if (value && typeof value === 'object') {
@@ -505,6 +507,52 @@ datasets.get('/:id/storyboard/markdown', async (c) => {
   } catch (error) {
     console.error('Failed to export storyboard:', error);
     return c.json({ error: 'Failed to export storyboard' }, 500);
+  }
+});
+
+// Generate quality scorecard for dataset
+datasets.get('/:id/quality-scorecard', async (c) => {
+  try {
+    const db = resolveDatabase(c.env);
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id)) {
+      return c.json({ error: 'Invalid dataset ID' }, 400);
+    }
+
+    const scorecard = await generateQualityScorecard(db, id);
+
+    if (!scorecard) {
+      return c.json({ error: 'Failed to generate quality scorecard - dataset not found or insufficient metadata' }, 404);
+    }
+
+    return c.json(scorecard);
+  } catch (error) {
+    console.error('Failed to generate quality scorecard:', error);
+    return c.json({ error: 'Failed to generate quality scorecard' }, 500);
+  }
+});
+
+// Generate column recommendations for dataset
+datasets.get('/:id/column-recommendations', async (c) => {
+  try {
+    const db = resolveDatabase(c.env);
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id)) {
+      return c.json({ error: 'Invalid dataset ID' }, 400);
+    }
+
+    const recommendations = await generateColumnRecommendations(db, id);
+
+    if (!recommendations) {
+      return c.json({ error: 'Failed to generate column recommendations - dataset not found or no columns available' }, 404);
+    }
+
+    return c.json(recommendations);
+  } catch (error) {
+    console.error('Failed to generate column recommendations:', error);
+    return c.json({ error: 'Failed to generate column recommendations' }, 500);
   }
 });
 
