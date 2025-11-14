@@ -2,6 +2,7 @@
 import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import { resolveDatabase } from '../storage';
+import { generateStoryboard, exportStoryboardAsMarkdown } from '../utils/storyboard-generator';
 function safeParseJson(value) {
     if (value && typeof value === 'object') {
         if (Buffer.isBuffer(value)) {
@@ -113,7 +114,11 @@ datasets.get('/', async (c) => {
 datasets.get('/:id', async (c) => {
     try {
         const db = resolveDatabase(c.env);
-        const id = c.req.param('id');
+        const idParam = c.req.param('id');
+        const id = Number(idParam);
+        if (isNaN(id) || id <= 0) {
+            return c.json({ error: 'Invalid dataset ID' }, 400);
+        }
         // Get dataset info
         const dataset = await db.prepare(`
       SELECT * FROM datasets WHERE id = ?
@@ -133,11 +138,11 @@ datasets.get('/:id', async (c) => {
             return { raw: r.data };
         });
         const rawColumns = safeParseJson(dataset.columns);
-        const datasetColumns = Array.isArray(rawColumns) ? rawColumns : [];
+        const columns = Array.isArray(rawColumns) ? rawColumns : [];
         return c.json(normalizeValue({
             dataset: {
                 ...dataset,
-                columns: datasetColumns,
+                columns: columns,
             },
             sample
         }));
@@ -153,13 +158,36 @@ datasets.get('/:id/analyses', async (c) => {
         const db = resolveDatabase(c.env);
         const id = c.req.param('id');
         const result = await db.prepare(`
-      SELECT * FROM analyses WHERE dataset_id = ? ORDER BY quality_score DESC, confidence DESC
+      SELECT
+        a.id,
+        ANY_VALUE(a.dataset_id) as dataset_id,
+        ANY_VALUE(a.analysis_type) as analysis_type,
+        ANY_VALUE(a.column_name) as column_name,
+        ANY_VALUE(a.result) as result,
+        ANY_VALUE(a.confidence) as confidence,
+        ANY_VALUE(a.explanation) as explanation,
+        ANY_VALUE(a.importance) as importance,
+        ANY_VALUE(a.quality_score) as quality_score,
+        ANY_VALUE(a.created_at) as created_at,
+        COALESCE(SUM(CASE WHEN f.feedback_type = 'thumbs_up' THEN 1 ELSE 0 END), 0) as thumbs_up_count,
+        COALESCE(SUM(CASE WHEN f.feedback_type = 'thumbs_down' THEN 1 ELSE 0 END), 0) as thumbs_down_count
+      FROM analyses a
+      LEFT JOIN insight_feedback f ON a.id = f.analysis_id
+      WHERE a.dataset_id = ?
+      GROUP BY a.id
+      ORDER BY
+        (COALESCE(SUM(CASE WHEN f.feedback_type = 'thumbs_up' THEN 1 ELSE 0 END), 0) * 10 -
+         COALESCE(SUM(CASE WHEN f.feedback_type = 'thumbs_down' THEN 1 ELSE 0 END), 0) * 5 +
+         ANY_VALUE(a.quality_score)) DESC,
+        ANY_VALUE(a.confidence) DESC
     `).bind(id).all();
         const analyses = result.results.map((a) => {
             const parsedResult = safeParseJson(a.result);
             return {
                 ...a,
                 result: typeof parsedResult === 'object' && parsedResult !== null ? parsedResult : a.result,
+                thumbs_up_count: Number(a.thumbs_up_count) || 0,
+                thumbs_down_count: Number(a.thumbs_down_count) || 0,
             };
         });
         return c.json(normalizeValue({ analyses }));
@@ -167,6 +195,79 @@ datasets.get('/:id/analyses', async (c) => {
     catch (error) {
         console.error('Failed to fetch analyses:', error);
         return c.json({ error: 'Failed to fetch analyses' }, 500);
+    }
+});
+// Record insight feedback
+datasets.post('/analyses/:analysisId/feedback', async (c) => {
+    try {
+        const db = resolveDatabase(c.env);
+        const analysisId = Number(c.req.param('analysisId'));
+        const { feedback_type } = await c.req.json();
+        if (!feedback_type || !['thumbs_up', 'thumbs_down'].includes(feedback_type)) {
+            return c.json({ error: 'Invalid feedback_type. Must be thumbs_up or thumbs_down' }, 400);
+        }
+        // Check if analysis exists
+        const analysis = await db.prepare(`
+      SELECT id FROM analyses WHERE id = ?
+    `).bind(analysisId).first();
+        if (!analysis) {
+            return c.json({ error: 'Analysis not found' }, 404);
+        }
+        // Insert or update feedback (using INSERT OR REPLACE for DuckDB compatibility)
+        await db.prepare(`
+      DELETE FROM insight_feedback WHERE analysis_id = ? AND feedback_type = ?
+    `).bind(analysisId, feedback_type).run();
+        await db.prepare(`
+      INSERT INTO insight_feedback (analysis_id, feedback_type) VALUES (?, ?)
+    `).bind(analysisId, feedback_type).run();
+        // Get updated counts
+        const feedbackResult = await db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN feedback_type = 'thumbs_up' THEN 1 ELSE 0 END), 0) as thumbs_up_count,
+        COALESCE(SUM(CASE WHEN feedback_type = 'thumbs_down' THEN 1 ELSE 0 END), 0) as thumbs_down_count
+      FROM insight_feedback
+      WHERE analysis_id = ?
+    `).bind(analysisId).first();
+        return c.json(normalizeValue({
+            success: true,
+            thumbs_up_count: Number(feedbackResult.thumbs_up_count) || 0,
+            thumbs_down_count: Number(feedbackResult.thumbs_down_count) || 0,
+        }));
+    }
+    catch (error) {
+        console.error('Failed to record feedback:', error);
+        return c.json({ error: 'Failed to record feedback' }, 500);
+    }
+});
+// Remove insight feedback
+datasets.delete('/analyses/:analysisId/feedback/:feedbackType', async (c) => {
+    try {
+        const db = resolveDatabase(c.env);
+        const analysisId = Number(c.req.param('analysisId'));
+        const feedbackType = c.req.param('feedbackType');
+        if (!['thumbs_up', 'thumbs_down'].includes(feedbackType)) {
+            return c.json({ error: 'Invalid feedback_type' }, 400);
+        }
+        await db.prepare(`
+      DELETE FROM insight_feedback WHERE analysis_id = ? AND feedback_type = ?
+    `).bind(analysisId, feedbackType).run();
+        // Get updated counts
+        const feedbackResult = await db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN feedback_type = 'thumbs_up' THEN 1 ELSE 0 END), 0) as thumbs_up_count,
+        COALESCE(SUM(CASE WHEN feedback_type = 'thumbs_down' THEN 1 ELSE 0 END), 0) as thumbs_down_count
+      FROM insight_feedback
+      WHERE analysis_id = ?
+    `).bind(analysisId).first();
+        return c.json(normalizeValue({
+            success: true,
+            thumbs_up_count: Number(feedbackResult.thumbs_up_count) || 0,
+            thumbs_down_count: Number(feedbackResult.thumbs_down_count) || 0,
+        }));
+    }
+    catch (error) {
+        console.error('Failed to remove feedback:', error);
+        return c.json({ error: 'Failed to remove feedback' }, 500);
     }
 });
 // Get visualizations for a dataset
@@ -299,6 +400,48 @@ datasets.delete('/:id', async (c) => {
     catch (error) {
         console.error('Failed to delete dataset:', error);
         return c.json({ error: 'Failed to delete dataset' }, 500);
+    }
+});
+// Generate storyboard for dataset
+datasets.get('/:id/storyboard', async (c) => {
+    try {
+        const db = resolveDatabase(c.env);
+        const id = parseInt(c.req.param('id'), 10);
+        if (isNaN(id)) {
+            return c.json({ error: 'Invalid dataset ID' }, 400);
+        }
+        const storyboard = await generateStoryboard(db, id);
+        if (!storyboard) {
+            return c.json({ error: 'Failed to generate storyboard - dataset not found or no analyses available' }, 404);
+        }
+        return c.json(storyboard);
+    }
+    catch (error) {
+        console.error('Failed to generate storyboard:', error);
+        return c.json({ error: 'Failed to generate storyboard' }, 500);
+    }
+});
+// Export storyboard as markdown
+datasets.get('/:id/storyboard/markdown', async (c) => {
+    try {
+        const db = resolveDatabase(c.env);
+        const id = parseInt(c.req.param('id'), 10);
+        if (isNaN(id)) {
+            return c.json({ error: 'Invalid dataset ID' }, 400);
+        }
+        const storyboard = await generateStoryboard(db, id);
+        if (!storyboard) {
+            return c.json({ error: 'Failed to generate storyboard - dataset not found or no analyses available' }, 404);
+        }
+        const markdown = exportStoryboardAsMarkdown(storyboard);
+        return c.text(markdown, 200, {
+            'Content-Type': 'text/markdown',
+            'Content-Disposition': `attachment; filename="storyboard-${storyboard.datasetName}-${Date.now()}.md"`
+        });
+    }
+    catch (error) {
+        console.error('Failed to export storyboard:', error);
+        return c.json({ error: 'Failed to export storyboard' }, 500);
     }
 });
 export default datasets;

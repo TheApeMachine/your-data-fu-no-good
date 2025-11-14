@@ -115,13 +115,13 @@ relationships.get('/:id', async (c) => {
             .filter((entry) => entry !== null);
         const datasetIdNumber = Number(datasetId);
         const topicAnalysis = Number.isFinite(datasetIdNumber)
-            ? await computeTextTopics(datasetIdNumber, db, { rowLimit: MAX_RELATIONSHIP_ROWS })
+            ? await computeTextTopics(datasetIdNumber, db, { rowLimit: 1500 })
             : { topics: [], similarities: [], clusters: [] };
         // Get all analyses
         const analysesResult = await db.prepare(`
       SELECT * FROM analyses WHERE dataset_id = ?
     `).bind(datasetId).all();
-        const analyses = analysesResult.results.map(a => ({
+        const analyses = analysesResult.results.map((a) => ({
             ...a,
             result: JSON.parse(a.result)
         }));
@@ -169,12 +169,12 @@ relationships.get('/:id', async (c) => {
                     id: topicId,
                     label: `Topic: ${topic.column}`,
                     type: 'topic',
-                    size: 24,
+                    size: 6,
                 });
                 nodeMap.set(topicId, true);
             }
             const topTerms = (topic.keywords ?? [])
-                .slice(0, 5)
+                .slice(0, 3)
                 .map((kw) => String(kw.term ?? '').trim())
                 .filter((term) => term.length > 0);
             const columnNodeId = `col_${topic.column}`;
@@ -184,7 +184,7 @@ relationships.get('/:id', async (c) => {
                     target: topicId,
                     type: 'topic',
                     strength: 0.7,
-                    label: topTerms.slice(0, 3).join(', '),
+                    label: topTerms.join(', '),
                 });
             }
         }
@@ -380,6 +380,184 @@ relationships.get('/:id', async (c) => {
     catch (error) {
         console.error('Relationship graph error:', error);
         return c.json({ error: 'Failed to generate relationship graph' }, 500);
+    }
+});
+// Get detailed information about a specific node
+relationships.get('/:datasetId/node/:nodeId', async (c) => {
+    try {
+        const datasetId = c.req.param('datasetId');
+        const nodeId = c.req.param('nodeId');
+        const db = resolveDatabase(c.env);
+        const dataset = await db.prepare(`
+      SELECT * FROM datasets WHERE id = ?
+    `).bind(datasetId).first();
+        if (!dataset) {
+            return c.json({ error: 'Dataset not found' }, 404);
+        }
+        const columns = JSON.parse(dataset.columns);
+        const totalRows = typeof dataset.row_count === 'number'
+            ? dataset.row_count
+            : Number(dataset.row_count ?? 0);
+        // Parse node ID to determine type and column name
+        let columnName = null;
+        let nodeType = 'unknown';
+        if (nodeId.startsWith('col_')) {
+            columnName = nodeId.replace('col_', '');
+            nodeType = 'column';
+        }
+        else if (nodeId.startsWith('topic_')) {
+            columnName = nodeId.replace('topic_', '');
+            nodeType = 'topic';
+        }
+        else if (nodeId.startsWith('val_')) {
+            // Pattern: val_columnName_value
+            const parts = nodeId.replace('val_', '').split('_');
+            if (parts.length >= 2) {
+                columnName = parts[0];
+                nodeType = 'value';
+            }
+        }
+        if (!columnName) {
+            return c.json({ error: 'Invalid node ID' }, 400);
+        }
+        // Find the column
+        const column = columns.find((col) => col.name === columnName);
+        if (!column && nodeType === 'column') {
+            return c.json({ error: 'Column not found' }, 404);
+        }
+        // Get all analyses related to this column
+        const analysesResult = await db.prepare(`
+      SELECT * FROM analyses WHERE dataset_id = ? AND column_name = ?
+      ORDER BY quality_score DESC, confidence DESC
+    `).bind(datasetId, columnName).all();
+        // Helper to normalize BigInt and other non-serializable values
+        function normalizeValue(value) {
+            if (typeof value === 'bigint') {
+                const asNumber = Number(value);
+                return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+            }
+            if (Array.isArray(value)) {
+                return value.map((item) => normalizeValue(item));
+            }
+            if (value instanceof Date) {
+                return value.toISOString();
+            }
+            if (value && typeof value === 'object') {
+                if (Buffer.isBuffer(value)) {
+                    return value.toString('utf-8');
+                }
+                if (value instanceof Uint8Array) {
+                    return Buffer.from(value).toString('utf-8');
+                }
+                const entries = Object.entries(value).map(([key, val]) => [key, normalizeValue(val)]);
+                return Object.fromEntries(entries);
+            }
+            return value;
+        }
+        const analyses = analysesResult.results.map((a) => {
+            const normalized = normalizeValue(a);
+            return {
+                ...normalized,
+                result: safeParseJson(normalized.result)
+            };
+        });
+        // Get visualizations related to this column
+        const visualizationsResult = await db.prepare(`
+      SELECT v.* FROM visualizations v
+      JOIN analyses a ON v.analysis_id = a.id
+      WHERE v.dataset_id = ? AND a.column_name = ?
+      ORDER BY v.display_order
+      LIMIT 10
+    `).bind(datasetId, columnName).all();
+        const visualizations = visualizationsResult.results.map((v) => {
+            const normalized = normalizeValue(v);
+            return {
+                ...normalized,
+                config: safeParseJson(normalized.config)
+            };
+        });
+        // Get sample data rows
+        const sampleRowsResult = await db.prepare(`
+      SELECT row_number, data FROM data_rows
+      WHERE dataset_id = ? AND is_cleaned = 0
+      ORDER BY row_number
+      LIMIT 10
+    `).bind(datasetId).all();
+        const sampleRows = sampleRowsResult.results
+            .map((row) => {
+            const parsed = safeParseJson(row.data);
+            if (!parsed || typeof parsed !== 'object')
+                return null;
+            return {
+                row_number: Number(row.row_number),
+                value: parsed[columnName] ?? null
+            };
+        })
+            .filter((r) => r !== null && r.value !== null);
+        // Compute connections from analyses (relationships are computed on-the-fly, not stored)
+        const connections = [];
+        // Correlation connections
+        analyses.filter(a => a.analysis_type === 'correlation').forEach((corr) => {
+            const { column1, column2 } = corr.result;
+            if (column1 === columnName && column2 !== columnName) {
+                const metrics = extractCorrelationMetrics(corr.result);
+                connections.push({
+                    type: 'correlation',
+                    target: `col_${column2}`,
+                    strength: metrics.bestStrength ?? 0,
+                    label: `Correlation: ${metrics.bestStrength?.toFixed(2) ?? 'N/A'}`
+                });
+            }
+            else if (column2 === columnName && column1 !== columnName) {
+                const metrics = extractCorrelationMetrics(corr.result);
+                connections.push({
+                    type: 'correlation',
+                    target: `col_${column1}`,
+                    strength: metrics.bestStrength ?? 0,
+                    label: `Correlation: ${metrics.bestStrength?.toFixed(2) ?? 'N/A'}`
+                });
+            }
+        });
+        // Get topic analysis if this is a text column
+        let topicInfo = null;
+        if (nodeType === 'topic' || (column && column.type === 'string')) {
+            try {
+                const topicAnalysis = await computeTextTopics(Number(datasetId), db, { rowLimit: 1500 });
+                const topic = topicAnalysis.topics.find(t => t.column === columnName);
+                if (topic) {
+                    topicInfo = {
+                        keywords: topic.keywords.slice(0, 10),
+                        document_count: topic.document_count,
+                        average_length: topic.average_length,
+                        samples: topic.samples.slice(0, 5)
+                    };
+                }
+            }
+            catch (error) {
+                console.warn('Failed to load topic analysis:', error);
+            }
+        }
+        return c.json(normalizeValue({
+            nodeId,
+            nodeType,
+            column: column ? {
+                name: column.name,
+                type: column.type,
+                profile: column.profile,
+                unique_count: getUniqueCount(column)
+            } : null,
+            statistics: column?.profile || null,
+            analyses: analyses.slice(0, 20), // Limit to top 20
+            visualizations: visualizations.slice(0, 10), // Limit to top 10
+            sampleRows,
+            connections: connections.slice(0, 20), // Limit to top 20
+            topicInfo,
+            totalRows
+        }));
+    }
+    catch (error) {
+        console.error('Node details error:', error);
+        return c.json({ error: 'Failed to fetch node details' }, 500);
     }
 });
 export default relationships;

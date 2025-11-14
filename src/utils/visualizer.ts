@@ -44,7 +44,9 @@ export async function generateVisualizations(
     const typeMultipliers: Record<string, number> = {
       'timeseries': 1.5,    // Time series are very valuable
       'anomaly': 1.4,        // Anomalies are critical insights
+      'pca': 1.35,           // PCA reveals structure
       'correlation': 1.3,    // Correlations reveal relationships
+      'clustering': 1.25,    // Clustering shows segments
       'trend': 1.2,          // Trends show patterns
       'outlier': 1.1,        // Outliers are important
       'pattern': 1.05,       // Patterns are useful
@@ -166,6 +168,9 @@ function createVisualizationForAnalysis(
 
     case 'timeseries':
       return createTimeSeriesChart(analysis, rows, mappingsMap);
+
+    case 'pca':
+      return createPCAChart(analysis);
 
     default:
       return null;
@@ -802,6 +807,123 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
               callback: (value: any) => {
                 return typeof value === 'number' ? value.toFixed(2) : value;
               }
+            }
+          }
+        }
+      }
+    }
+  };
+}
+
+function createPCAChart(analysis: Analysis) {
+  const result = analysis.result;
+  if (!result || !result.explainedVariance || !result.loadings) return null;
+
+  const numComponents = Math.min(result.explainedVariance.length, 10);
+
+  // Create scree plot showing explained variance by component
+  const componentLabels = Array.from({ length: numComponents }, (_, i) => `PC${i + 1}`);
+  const explainedVariances = result.explainedVariance.slice(0, numComponents);
+  const cumulativeVariances = result.cumulativeVariance?.slice(0, numComponents) || [];
+
+  return {
+    chartType: 'line',
+    title: 'Principal Component Analysis - Explained Variance',
+    explanation: `This scree plot shows how much variance each principal component explains. ${result.recommendedComponents} components are recommended to retain 80% of the data's variance. The first component explains ${result.explainedVariance[0]?.toFixed(1)}% of variance, primarily driven by ${result.loadings[0]?.features.slice(0, 2).map((f: any) => f.name).join(', ')}.`,
+    config: {
+      type: 'line',
+      data: {
+        labels: componentLabels,
+        datasets: [
+          {
+            label: 'Explained Variance (%)',
+            data: explainedVariances,
+            backgroundColor: 'rgba(59, 130, 246, 0.2)',
+            borderColor: 'rgba(59, 130, 246, 1)',
+            borderWidth: 2,
+            fill: true,
+            tension: 0.1,
+            yAxisID: 'y'
+          },
+          {
+            label: 'Cumulative Variance (%)',
+            data: cumulativeVariances,
+            backgroundColor: 'rgba(16, 185, 129, 0.2)',
+            borderColor: 'rgba(16, 185, 129, 1)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            tension: 0.1,
+            yAxisID: 'y'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: {
+            display: true,
+            position: 'top'
+          },
+          title: {
+            display: true,
+            text: 'PCA Scree Plot - Variance Explained by Component',
+            font: {
+              size: 14,
+              weight: 'bold'
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: (context: any) => {
+                const label = context.dataset.label || '';
+                const value = context.parsed.y.toFixed(2);
+                return `${label}: ${value}%`;
+              }
+            }
+          },
+          annotation: result.recommendedComponents ? {
+            annotations: {
+              cutoff: {
+                type: 'line',
+                xMin: result.recommendedComponents - 0.5,
+                xMax: result.recommendedComponents - 0.5,
+                borderColor: 'rgba(220, 38, 38, 0.5)',
+                borderWidth: 2,
+                borderDash: [10, 5],
+                label: {
+                  display: true,
+                  content: '80% Threshold',
+                  position: 'start'
+                }
+              }
+            }
+          } : undefined
+        },
+        scales: {
+          x: {
+            title: {
+              display: true,
+              text: 'Principal Component'
+            }
+          },
+          y: {
+            type: 'linear',
+            display: true,
+            position: 'left',
+            title: {
+              display: true,
+              text: 'Variance (%)'
+            },
+            beginAtZero: true,
+            max: 100,
+            ticks: {
+              callback: (value: any) => `${value}%`
             }
           }
         }

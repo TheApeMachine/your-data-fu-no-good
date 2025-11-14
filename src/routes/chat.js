@@ -160,7 +160,7 @@ async function executeGetOutlierColumns(db, datasetId, args) {
     const minCount = args.min_outlier_count || 1;
     const result = await db.prepare(`
     SELECT column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'outlier'
     ORDER BY quality_score DESC
   `).bind(datasetId).all();
@@ -186,7 +186,7 @@ async function executeGetCorrelationAnalysis(db, datasetId, args) {
     const columnName = args.column_name;
     let query = `
     SELECT column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'correlation'
   `;
     if (columnName) {
@@ -215,7 +215,7 @@ async function executeGetColumnStatistics(db, datasetId, args) {
     const columnName = args.column_name;
     const result = await db.prepare(`
     SELECT analysis_type, column_name, result, explanation, importance, confidence, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND column_name = ?
     ORDER BY quality_score DESC
   `).bind(datasetId, columnName).all();
@@ -243,7 +243,7 @@ async function executeSearchAnalyses(db, datasetId, args) {
     const keyword = args.keyword;
     let query = `
     SELECT analysis_type, column_name, result, explanation, quality_score
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ?
   `;
     const params = [datasetId];
@@ -272,9 +272,9 @@ async function executeGetDataSample(db, datasetId, args) {
     const limit = Math.min(args.limit || 5, 20);
     const columns = args.columns;
     const result = await db.prepare(`
-    SELECT data FROM data_rows 
-    WHERE dataset_id = ? 
-    ORDER BY row_number 
+    SELECT data FROM data_rows
+    WHERE dataset_id = ?
+    ORDER BY row_number
     LIMIT ?
   `).bind(datasetId, limit).all();
     const rows = result.results.map((r) => JSON.parse(r.data));
@@ -302,7 +302,7 @@ async function executeGetMissingValues(db, datasetId, args) {
     const minPercentage = args.min_missing_percentage || 0;
     const result = await db.prepare(`
     SELECT analysis_type, column_name, result, explanation
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ? AND analysis_type = 'missing'
   `).bind(datasetId).all();
     const missingData = result.results
@@ -325,7 +325,7 @@ async function executeSuggestDataCleaning(db, datasetId, args) {
     const columnName = args.column_name;
     let query = `
     SELECT analysis_type, column_name, result, explanation
-    FROM analyses 
+    FROM analyses
     WHERE dataset_id = ?
   `;
     const params = [datasetId];
@@ -456,6 +456,28 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
         };
     }
 }
+// Helper function to get dataset context for the main chat endpoint
+async function getDatasetContext(db, datasetId) {
+    const dataset = await db
+        .prepare(`SELECT name, columns, row_count, column_count FROM datasets WHERE id = ?`)
+        .bind(datasetId)
+        .first();
+    if (!dataset) {
+        throw new Error('Dataset not found');
+    }
+    const columns = JSON.parse(dataset.columns);
+    const context = `
+You are a helpful data analysis assistant. Your goal is to provide insights on a given dataset.
+
+Dataset name: ${dataset.name}
+Rows: ${dataset.row_count}
+Columns: ${dataset.column_count}
+
+Available columns for analysis:
+${columns.map((col) => `- ${col.name} (type: ${col.type})`).join('\n')}
+`;
+    return { context, columns };
+}
 // Streaming chat endpoint
 chat.post('/:datasetId/stream', async (c) => {
     const datasetId = c.req.param('datasetId');
@@ -470,7 +492,10 @@ chat.post('/:datasetId/stream', async (c) => {
     }
     // Fetch dataset context
     const db = resolveDatabase(c.env);
-    const dataset = await db.prepare(`SELECT * FROM datasets WHERE id = ?`).bind(datasetId).first();
+    const dataset = await db
+        .prepare(`SELECT name, columns, row_count, column_count FROM datasets WHERE id = ?`)
+        .bind(datasetId)
+        .first();
     if (!dataset) {
         return c.json({ error: 'Dataset not found' }, 404);
     }
@@ -639,9 +664,9 @@ Keep answers concise (under 4 short paragraphs total) and make sure every piece 
     });
 });
 // Main chat endpoint (non-streaming for compatibility)
-chat.post('/:datasetId', async (c) => {
+chat.post('/:id', async (c) => {
     try {
-        const datasetId = c.req.param('datasetId');
+        const datasetId = c.req.param('id');
         const { message, conversationHistory = [] } = await c.req.json();
         // Check if OpenAI API key is configured
         const apiKey = c.env.OPENAI_API_KEY;
@@ -653,31 +678,7 @@ chat.post('/:datasetId', async (c) => {
         }
         // Fetch dataset context
         const db = resolveDatabase(c.env);
-        const dataset = await db.prepare(`
-      SELECT * FROM datasets WHERE id = ?
-    `).bind(datasetId).first();
-        if (!dataset) {
-            return c.json({ error: 'Dataset not found' }, 404);
-        }
-        // Build lightweight system prompt (since we have tools now)
-        const columns = JSON.parse(dataset.columns);
-        const systemPrompt = `You are a friendly insight assistant for business users with limited data-science background.
-
-Dataset name: ${dataset.name}
-Rows: ${dataset.row_count}
-Columns: ${dataset.column_count}
-
-Available tools let you fetch precise facts (statistics, correlations, samples, data quality issues, cleaning tips, MongoDB queries). Use them when you need evidence, then translate the meaning into plain language.
-
-Guidelines:
-- Lead with the story, not the stats. Start every answer with 2–3 bullet points titled "What this means" that explain the impact or pattern in everyday words.
-- Mention numbers only when they change the decision (round them sensibly, e.g. “about 84% missing”).
-- Highlight data quality risks, but immediately suggest what the user could do about them (cleaning option, extra column to create, question to ask the data owner).
-- Finish with a short "Suggested next steps" list (max 3 bullets) that keeps the user moving forward.
-- Never dump raw tables or long lists of metrics. The user wants actionable intelligence, not diagnostics.
-- If the user asks for a query or deeper dive, call the appropriate tool and summarise the result in the same approachable tone.
-
-Keep answers concise (under 4 short paragraphs total) and make sure every piece of evidence is tied to why it matters.`;
+        const { context: systemPrompt, columns } = await getDatasetContext(db, datasetId);
         // Build messages array
         const messages = [
             { role: 'system', content: systemPrompt },

@@ -12,12 +12,77 @@ export async function generateVisualizations(datasetId, rows, analyses, db) {
     mappingsResult.results.forEach(m => {
         mappingsMap.set(m.id_column, m.name_column);
     });
+    // Calculate priority score for each analysis to surface most valuable charts
+    function calculateVisualizationPriority(analysis) {
+        let priority = analysis.quality_score || 50;
+        // Boost priority based on analysis type (more valuable insights first)
+        const typeMultipliers = {
+            'timeseries': 1.5, // Time series are very valuable
+            'anomaly': 1.4, // Anomalies are critical insights
+            'pca': 1.35, // PCA reveals structure
+            'correlation': 1.3, // Correlations reveal relationships
+            'clustering': 1.25, // Clustering shows segments
+            'trend': 1.2, // Trends show patterns
+            'outlier': 1.1, // Outliers are important
+            'pattern': 1.05, // Patterns are useful
+            'statistics': 1.0 // Basic stats are baseline
+        };
+        priority *= typeMultipliers[analysis.analysis_type] || 1.0;
+        // Boost priority based on confidence
+        if (analysis.confidence) {
+            priority *= (1 + analysis.confidence / 100);
+        }
+        // Boost priority for high-impact insights (high importance)
+        if (analysis.importance === 'high' || analysis.importance === 'critical') {
+            priority *= 1.3;
+        }
+        else if (analysis.importance === 'medium') {
+            priority *= 1.1;
+        }
+        // Boost priority for analyses with strong signals
+        const result = analysis.result;
+        if (result) {
+            // Strong correlations are more valuable
+            if (result.correlation && Math.abs(result.correlation) > 0.7) {
+                priority *= 1.2;
+            }
+            // Strong trends are more valuable
+            if (result.strength && result.strength > 0.5) {
+                priority *= 1.15;
+            }
+            // Anomalies with significant share are more valuable
+            if (result.share && result.share > 0.05) {
+                priority *= 1.1;
+            }
+            // Time series with seasonality are more valuable
+            if (result.seasonality && result.seasonality !== 'none') {
+                priority *= 1.15;
+            }
+        }
+        return priority;
+    }
+    // Calculate priorities and sort
+    const analysesWithPriority = analyses.map(analysis => ({
+        analysis,
+        priority: calculateVisualizationPriority(analysis)
+    }));
+    // Sort by priority (highest first), then by quality_score, then by confidence
+    analysesWithPriority.sort((a, b) => {
+        if (Math.abs(a.priority - b.priority) > 1) {
+            return b.priority - a.priority;
+        }
+        const qualityDiff = (b.analysis.quality_score || 50) - (a.analysis.quality_score || 50);
+        if (Math.abs(qualityDiff) > 5) {
+            return qualityDiff;
+        }
+        return (b.analysis.confidence || 0) - (a.analysis.confidence || 0);
+    });
     let displayOrder = 0;
-    // Sort analyses by quality score (highest first)
-    const sortedAnalyses = [...analyses].sort((a, b) => (b.quality_score || 50) - (a.quality_score || 50));
-    for (const analysis of sortedAnalyses) {
+    for (const { analysis } of analysesWithPriority) {
         // Skip visualizations for low-quality insights (score < 30)
-        if ((analysis.quality_score || 50) < 30) {
+        // But allow high-priority types even if quality is slightly lower
+        const minQuality = ['anomaly', 'timeseries', 'correlation'].includes(analysis.analysis_type) ? 25 : 30;
+        if ((analysis.quality_score || 50) < minQuality) {
             console.log(`Skipping low-quality visualization for ${analysis.column_name} (score: ${analysis.quality_score})`);
             continue;
         }
@@ -47,6 +112,8 @@ function createVisualizationForAnalysis(analysis, rows, mappingsMap) {
             return createTrendChart(analysis, rows, mappingsMap);
         case 'timeseries':
             return createTimeSeriesChart(analysis, rows, mappingsMap);
+        case 'pca':
+            return createPCAChart(analysis);
         default:
             return null;
     }
@@ -629,6 +696,120 @@ function createTimeSeriesChart(analysis, rows, mappingsMap) {
                             callback: (value) => {
                                 return typeof value === 'number' ? value.toFixed(2) : value;
                             }
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+function createPCAChart(analysis) {
+    const result = analysis.result;
+    if (!result || !result.explainedVariance || !result.loadings)
+        return null;
+    const numComponents = Math.min(result.explainedVariance.length, 10);
+    // Create scree plot showing explained variance by component
+    const componentLabels = Array.from({ length: numComponents }, (_, i) => `PC${i + 1}`);
+    const explainedVariances = result.explainedVariance.slice(0, numComponents);
+    const cumulativeVariances = result.cumulativeVariance?.slice(0, numComponents) || [];
+    return {
+        chartType: 'line',
+        title: 'Principal Component Analysis - Explained Variance',
+        explanation: `This scree plot shows how much variance each principal component explains. ${result.recommendedComponents} components are recommended to retain 80% of the data's variance. The first component explains ${result.explainedVariance[0]?.toFixed(1)}% of variance, primarily driven by ${result.loadings[0]?.features.slice(0, 2).map((f) => f.name).join(', ')}.`,
+        config: {
+            type: 'line',
+            data: {
+                labels: componentLabels,
+                datasets: [
+                    {
+                        label: 'Explained Variance (%)',
+                        data: explainedVariances,
+                        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                        borderColor: 'rgba(59, 130, 246, 1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.1,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Cumulative Variance (%)',
+                        data: cumulativeVariances,
+                        backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                        borderColor: 'rgba(16, 185, 129, 1)',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0.1,
+                        yAxisID: 'y'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    title: {
+                        display: true,
+                        text: 'PCA Scree Plot - Variance Explained by Component',
+                        font: {
+                            size: 14,
+                            weight: 'bold'
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: (context) => {
+                                const label = context.dataset.label || '';
+                                const value = context.parsed.y.toFixed(2);
+                                return `${label}: ${value}%`;
+                            }
+                        }
+                    },
+                    annotation: result.recommendedComponents ? {
+                        annotations: {
+                            cutoff: {
+                                type: 'line',
+                                xMin: result.recommendedComponents - 0.5,
+                                xMax: result.recommendedComponents - 0.5,
+                                borderColor: 'rgba(220, 38, 38, 0.5)',
+                                borderWidth: 2,
+                                borderDash: [10, 5],
+                                label: {
+                                    display: true,
+                                    content: '80% Threshold',
+                                    position: 'start'
+                                }
+                            }
+                        }
+                    } : undefined
+                },
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Principal Component'
+                        }
+                    },
+                    y: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: 'Variance (%)'
+                        },
+                        beginAtZero: true,
+                        max: 100,
+                        ticks: {
+                            callback: (value) => `${value}%`
                         }
                     }
                 }

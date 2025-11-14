@@ -323,3 +323,34 @@ export function profileColumns(rows, options = {}) {
     }
     return profiles;
 }
+import { MinHash } from './minhash';
+export async function computeDeepColumnProfiles(db, datasetId) {
+    const dataset = await db.prepare('SELECT columns FROM datasets WHERE id = ?').bind(datasetId).first();
+    if (!dataset)
+        return {};
+    const columns = JSON.parse(dataset.columns);
+    const candidateColumns = columns.filter(c => c.type === 'string' && c.profile && c.profile.unique_ratio < 0.95); // Don't profile pure identifiers
+    const deepProfiles = {};
+    for (const col of candidateColumns) {
+        const rowsResult = await db.prepare('SELECT data FROM data_rows WHERE dataset_id = ?').bind(datasetId).all();
+        if (!rowsResult.results)
+            continue;
+        const values = new Set();
+        rowsResult.results.forEach(row => {
+            try {
+                const parsed = JSON.parse(row.data);
+                const val = parsed[col.name];
+                if (typeof val === 'string' && val) {
+                    values.add(val.trim());
+                }
+            }
+            catch { }
+        });
+        if (values.size > 10) {
+            const minhash = new MinHash();
+            values.forEach(v => minhash.update(v));
+            deepProfiles[col.name] = { minhash: minhash.serialize() };
+        }
+    }
+    return deepProfiles;
+}

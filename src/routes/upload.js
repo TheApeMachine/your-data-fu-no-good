@@ -29,7 +29,7 @@ upload.post('/', async (c) => {
             return c.json({ error: 'Unsupported file type. Please upload CSV or JSON.' }, 400);
         }
         // Check file size (limit to 5MB for performance)
-        if (file.size > 5 * 1024 * 1024) {
+        if (file.size > 1024 * 1024 * 1024) {
             return c.json({ error: 'File too large. Maximum size is 5MB.' }, 400);
         }
         // Read file content
@@ -52,7 +52,7 @@ upload.post('/', async (c) => {
             return c.json({ error: 'File contains no data' }, 400);
         }
         // Limit row count for MVP (prevents server overload)
-        if (rows.length > 10000) {
+        if (rows.length > 1000000) {
             return c.json({ error: 'Dataset too large. Maximum 10,000 rows supported.' }, 400);
         }
         // Infer column types

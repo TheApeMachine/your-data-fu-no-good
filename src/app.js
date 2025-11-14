@@ -11,6 +11,7 @@ import clean from './routes/clean';
 import features from './routes/features';
 import topics from './routes/topics';
 import sessions from './routes/sessions';
+import forensics from './routes/forensics';
 export function createApp() {
     const app = new Hono();
     app.use('/api/*', cors());
@@ -91,6 +92,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
     app.route('/api/features', features);
     app.route('/api/topics', topics);
     app.route('/api/sessions', sessions);
+    app.route('/api/forensics', forensics);
     app.get('/api/health', (c) => {
         return c.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
@@ -324,7 +326,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                     <p id="status-message" class="text-lg font-semibold">Uploading...</p>
                                     <p id="status-detail" class="text-sm mt-2" style="color: var(--text-secondary);"></p>
                                     <div class="mt-4 w-64 mx-auto neu-card-inset rounded-full h-3">
-                                        <div id="progress-bar" class="h-3 rounded-full transition-all duration-300" 
+                                        <div id="progress-bar" class="h-3 rounded-full transition-all duration-300"
                                              style="width: 0%; background: linear-gradient(90deg, var(--accent), #2563eb);"></div>
                                     </div>
                                 </div>
@@ -339,22 +341,22 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                         <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
                                             <i class="fas fa-link mr-1"></i>Connection String
                                         </label>
-                                        <input type="text" id="mongodb-connection-string" 
+                                        <input type="text" id="mongodb-connection-string"
                                                placeholder="mongodb+srv://username:password@cluster.mongodb.net/database"
-                                               class="w-full p-3 rounded-lg neu-card-inset" 
+                                               class="w-full p-3 rounded-lg neu-card-inset"
                                                style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                         <p class="text-xs mt-1" style="color: var(--text-secondary);">
                                             Your MongoDB Atlas connection string (stored securely, not persisted)
                                         </p>
                                     </div>
-                                    
+
                                     <div class="grid grid-cols-2 gap-4">
                                         <div>
                                             <label class="block text-sm font-semibold mb-2" style="color: var(--text-primary);">
                                                 <i class="fas fa-database mr-1"></i>Database
                                             </label>
                                             <input type="text" id="mongodb-database" placeholder="myDatabase"
-                                                   class="w-full p-3 rounded-lg neu-card-inset" 
+                                                   class="w-full p-3 rounded-lg neu-card-inset"
                                                    style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                         </div>
                                         <div>
@@ -362,7 +364,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                                 <i class="fas fa-table mr-1"></i>Collection
                                             </label>
                                             <input type="text" id="mongodb-collection" placeholder="myCollection"
-                                                   class="w-full p-3 rounded-lg neu-card-inset" 
+                                                   class="w-full p-3 rounded-lg neu-card-inset"
                                                    style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                         </div>
                                     </div>
@@ -376,9 +378,9 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                                 <p class="text-xs mb-2" style="color: var(--text-secondary);">
                                                     Describe what you want to query in plain English, and AI will generate the MongoDB syntax for you!
                                                 </p>
-                                                <input type="text" id="mongodb-ai-prompt" 
+                                                <input type="text" id="mongodb-ai-prompt"
                                                        placeholder='e.g., "Find all active users from last month" or "Group sales by category and sum totals"'
-                                                       class="w-full p-2 rounded-lg neu-card-inset text-sm mb-2" 
+                                                       class="w-full p-2 rounded-lg neu-card-inset text-sm mb-2"
                                                        style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                                 <div class="flex gap-2">
                                                     <button onclick="generateMongoDBQuery('find')" class="neu-button text-xs px-3 py-1">
@@ -397,7 +399,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                             <i class="fas fa-filter mr-1"></i>Query (optional)
                                         </label>
                                         <textarea id="mongodb-query" rows="3" placeholder='{"status": "active"}'
-                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm" 
+                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm"
                                                   style="background: var(--bg-primary); color: var(--text-primary); border: none;"></textarea>
                                         <p class="text-xs mt-1" style="color: var(--text-secondary);">
                                             MongoDB query object (JSON format)
@@ -409,7 +411,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                             <i class="fas fa-code-branch mr-1"></i>Aggregation Pipeline (optional)
                                         </label>
                                         <textarea id="mongodb-pipeline" rows="5" placeholder='[{"$match": {"status": "active"}}, {"$group": {"_id": "$category", "count": {"$sum": 1}}}]'
-                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm" 
+                                                  class="w-full p-3 rounded-lg neu-card-inset font-mono text-sm"
                                                   style="background: var(--bg-primary); color: var(--text-primary); border: none;"></textarea>
                                         <p class="text-xs mt-1" style="color: var(--text-secondary);">
                                             MongoDB aggregation pipeline (JSON array format)
@@ -421,7 +423,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                             <i class="fas fa-list-ol mr-1"></i>Limit
                                         </label>
                                         <input type="number" id="mongodb-limit" value="10000" min="1"
-                                               class="w-full p-3 rounded-lg neu-card-inset" 
+                                               class="w-full p-3 rounded-lg neu-card-inset"
                                                style="background: var(--bg-primary); color: var(--text-primary); border: none;">
                                         <p class="text-xs mt-1" style="color: var(--text-secondary);">
                                             Maximum number of documents to import (default: 10,000, max: 1,000,000)
@@ -502,6 +504,9 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                     <button id="tab-insights" onclick="switchTab('insights')" class="tab-btn active">
                                         <i class="fas fa-lightbulb mr-2"></i>Insights
                                     </button>
+                                    <button id="tab-forensics" onclick="switchTab('forensics')" class="tab-btn">
+                                        <i class="fas fa-user-shield mr-2"></i>Forensics
+                                    </button>
                                     <button id="tab-relationships" onclick="switchTab('relationships')" class="tab-btn">
                                         <i class="fas fa-project-diagram mr-2"></i>Relationships
                                     </button>
@@ -521,8 +526,8 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                     <div class="flex gap-3 items-center flex-wrap">
                                         <div class="flex-1 min-w-[240px] neu-card-inset rounded-lg p-2 flex items-center">
                                             <i class="fas fa-search mx-3" style="color: var(--text-secondary);"></i>
-                                            <input type="text" id="insight-search" 
-                                                   placeholder="Search insights, columns, patterns..." 
+                                            <input type="text" id="insight-search"
+                                                   placeholder="Search insights, columns, patterns..."
                                                    onkeyup="debouncedSearch(this.value)"
                                                    class="flex-1 bg-transparent border-none outline-none"
                                                    style="color: var(--text-primary);">
@@ -692,6 +697,30 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                                     <div id="mappings-container"></div>
                                 </div>
                             </div>
+
+                            <!-- Forensics Tab -->
+                            <div id="tab-content-forensics" class="hidden flex flex-col gap-4">
+                                <div class="neu-card p-6">
+                                    <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                        <div>
+                                            <h2 class="text-2xl font-bold">
+                                                <i class="fas fa-user-shield mr-2" style="color: #ef4444;"></i>
+                                                Data Forensics
+                                            </h2>
+                                            <p class="text-sm mt-2" style="color: var(--text-secondary);">
+                                                We translate statistical signals into everyday language and point you to the next helpful step.
+                                            </p>
+                                        </div>
+                                        <div class="text-xs md:text-right" style="color: var(--text-secondary);">
+                                            <span id="forensics-last-updated" class="hidden"></span>
+                                        </div>
+                                    </div>
+                                    <div id="forensics-summary" class="mt-6 grid gap-4 md:grid-cols-3"></div>
+                                    <div id="forensics-status" class="mt-4 text-sm" style="color: var(--text-secondary);"></div>
+                                </div>
+                                <div id="forensics-case-list" class="flex flex-col gap-4"></div>
+                                <div id="forensics-signal-list" class="flex flex-col gap-4"></div>
+                            </div>
                         </section>
                     </div>
                 </div>
@@ -737,8 +766,8 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                 </div>
             </div>
             <div class="p-4 border-t flex gap-2" style="border-color: var(--shadow-dark);">
-                <input type="text" id="chat-input" 
-                       placeholder="Ask about your data..." 
+                <input type="text" id="chat-input"
+                       placeholder="Ask about your data..."
                        class="flex-1 neu-card-inset rounded-lg px-4 py-2 bg-transparent border-none outline-none"
                        style="color: var(--text-primary);">
                 <button onclick="sendChatMessage()" class="neu-button-accent px-4 py-2">
@@ -748,7 +777,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
         </div>
 
         <!-- Chat Toggle Button -->
-        <button id="chat-toggle-btn" onclick="toggleChat()" 
+        <button id="chat-toggle-btn" onclick="toggleChat()"
                 class="fixed bottom-8 right-8 w-14 h-14 neu-button-accent rounded-full flex items-center justify-center no-print"
                 style="z-index: 999;">
             <i class="fas fa-comments text-xl"></i>
@@ -768,7 +797,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                 </div>
 
                 <p class="mb-6" style="color: var(--text-secondary);">
-                    Choose a cleaning level to remove problematic rows and improve data quality. 
+                    Choose a cleaning level to remove problematic rows and improve data quality.
                     A new cleaned dataset will be created (original preserved).
                 </p>
 
@@ -849,7 +878,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
             const newTheme = currentTheme === 'light' ? 'dark' : 'light';
             html.setAttribute('data-theme', newTheme);
             localStorage.setItem('theme', newTheme);
-            
+
             const icon = document.getElementById('theme-icon');
             icon.className = newTheme === 'light' ? 'fas fa-moon' : 'fas fa-sun';
           }

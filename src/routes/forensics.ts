@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import type { Bindings, ForensicCaseStatus, ForensicSeverity } from '../types';
 import { resolveDatabase } from '../storage';
 import { createForensicCase, linkEventsToCase, updateForensicCaseStatus } from '../utils/forensics';
+import { generateAllTheories } from '../utils/theory-generator';
 
 const SEVERITY_ORDER: ForensicSeverity[] = ['critical', 'high', 'medium', 'low', 'info'];
 const SEVERITY_LABEL: Record<ForensicSeverity, string> = {
@@ -800,6 +801,50 @@ forensics.post('/cases/:caseId/status', async (c) => {
 
   await updateForensicCaseStatus(db, caseId, requestedStatus);
   return c.json({ success: true });
+});
+
+// Generate data theories for forensic investigation
+forensics.get('/datasets/:datasetId/theories', async (c) => {
+  const datasetId = parseInt(c.req.param('datasetId'), 10);
+
+  if (Number.isNaN(datasetId)) {
+    return c.json({ error: 'Invalid dataset ID' }, 400);
+  }
+
+  const db = resolveDatabase(c.env);
+
+  try {
+    const theories = await generateAllTheories(db, datasetId);
+
+    return c.json({
+      dataset_id: datasetId,
+      theory_count: theories.length,
+      theories: theories.map(theory => ({
+        id: theory.id,
+        hypothesis: theory.hypothesis,
+        alternative_hypothesis: theory.alternativeHypothesis,
+        confidence_score: theory.confidenceScore,
+        evidence_strength: theory.evidenceStrength,
+        case_type: theory.caseType,
+        severity: theory.severity,
+        priority: theory.priority,
+        statistical_tests: theory.statisticalTests,
+        supporting_evidence_count: theory.supportingEvidence.length,
+        contradicting_evidence_count: theory.contradictingEvidence.length,
+        open_questions: theory.openQuestions,
+        suggested_actions: theory.suggestedActions.map(action => ({
+          action: action.action,
+          rationale: action.rationale,
+          expected_outcome: action.expectedOutcome,
+          priority: action.priority,
+          tools_required: action.toolsRequired
+        }))
+      }))
+    });
+  } catch (error) {
+    console.error('Error generating theories:', error);
+    return c.json({ error: 'Failed to generate theories' }, 500);
+  }
 });
 
 export default forensics;

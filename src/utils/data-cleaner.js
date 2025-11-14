@@ -182,33 +182,42 @@ function fillNumericGaps(rows, columns) {
  */
 function removeOutlierRows(rows, columns) {
     const numericColumns = columns.filter(c => c.type === 'number').map(c => c.name);
-    // Detect outliers for each numeric column
-    const outlierIndicesByColumn = {};
+    // Detect outliers for each numeric column, mapping indices back to original rows
+    const outlierRowIndices = new Set();
     for (const col of numericColumns) {
-        const values = rows.map(r => {
-            const val = r[col];
-            return val !== null && val !== undefined ? Number(val) : NaN;
-        }).filter(v => !isNaN(v));
-        if (values.length > 10) { // Need enough data
+        // Map each row index to its value, keeping track of original indices
+        const indexedValues = [];
+        rows.forEach((row, idx) => {
+            const val = row[col];
+            if (val !== null && val !== undefined) {
+                const numVal = Number(val);
+                if (!isNaN(numVal)) {
+                    indexedValues.push({ originalIdx: idx, value: numVal });
+                }
+            }
+        });
+        if (indexedValues.length > 10) { // Need enough data
+            const values = indexedValues.map(iv => iv.value);
             const outlierResult = detectOutliers(values);
-            outlierIndicesByColumn[col] = new Set(outlierResult.indices);
+            // Map filtered array indices back to original row indices
+            for (const filteredIdx of outlierResult.indices) {
+                if (filteredIdx >= 0 && filteredIdx < indexedValues.length) {
+                    outlierRowIndices.add(indexedValues[filteredIdx].originalIdx);
+                }
+            }
         }
     }
     // Remove rows that have outliers in ANY numeric column
-    return rows.filter((row, idx) => {
-        for (const col in outlierIndicesByColumn) {
-            if (outlierIndicesByColumn[col].has(idx)) {
-                return false; // This row has an outlier
-            }
-        }
-        return true;
-    });
+    return rows.filter((row, idx) => !outlierRowIndices.has(idx));
 }
 /**
  * Remove rows with rare category values (appearing < threshold frequency)
+ * Limits removal to prevent removing all rows - caps at 50% of rows
  */
 function removeRareCategoryRows(rows, columns, threshold) {
     const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
+    if (stringColumns.length === 0)
+        return rows;
     // Calculate frequencies for each string column
     const rareCategoriesByColumn = {};
     for (const col of stringColumns) {
@@ -217,11 +226,15 @@ function removeRareCategoryRows(rows, columns, threshold) {
         for (const row of rows) {
             const value = row[col];
             if (value !== null && value !== undefined && value !== '') {
-                const key = String(value);
+                const key = String(value).toLowerCase(); // Normalize for comparison
                 frequency[key] = (frequency[key] || 0) + 1;
                 totalCount++;
             }
         }
+        // Only process columns with enough distinct values (at least 3)
+        const distinctCount = Object.keys(frequency).length;
+        if (distinctCount < 3)
+            continue; // Skip columns with too few categories
         // Find rare categories
         const rareCategories = new Set();
         for (const [category, count] of Object.entries(frequency)) {
@@ -229,20 +242,31 @@ function removeRareCategoryRows(rows, columns, threshold) {
                 rareCategories.add(category);
             }
         }
-        if (rareCategories.size > 0) {
+        // Don't mark all categories as rare (would remove everything)
+        if (rareCategories.size > 0 && rareCategories.size < distinctCount) {
             rareCategoriesByColumn[col] = rareCategories;
         }
     }
-    // Remove rows that have rare categories
-    return rows.filter(row => {
+    if (Object.keys(rareCategoriesByColumn).length === 0) {
+        return rows; // No rare categories found
+    }
+    // Identify rows to remove, but limit to 50% of total rows
+    const rowsToRemove = new Set();
+    for (let idx = 0; idx < rows.length; idx++) {
+        const row = rows[idx];
         for (const col in rareCategoriesByColumn) {
-            const value = String(row[col]);
+            const value = String(row[col] || '').toLowerCase();
             if (rareCategoriesByColumn[col].has(value)) {
-                return false; // This row has a rare category
+                rowsToRemove.add(idx);
+                break; // Only count once per row
             }
         }
-        return true;
-    });
+        // Safety cap: don't remove more than 50% of rows
+        if (rowsToRemove.size >= Math.floor(rows.length * 0.5)) {
+            break;
+        }
+    }
+    return rows.filter((row, idx) => !rowsToRemove.has(idx));
 }
 /**
  * Get suggested key columns (columns with few nulls and high importance)

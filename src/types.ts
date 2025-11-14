@@ -79,12 +79,13 @@ export interface DataRow {
 export interface Analysis {
   id: number;
   dataset_id: number;
-  analysis_type: 'statistics' | 'correlation' | 'outlier' | 'anomaly' | 'pattern' | 'trend' | 'timeseries' | 'missing' | 'feature' | 'clustering';
+  analysis_type: 'statistics' | 'correlation' | 'outlier' | 'anomaly' | 'pattern' | 'trend' | 'timeseries' | 'missing' | 'feature' | 'clustering' | 'pca' | 'causal';
   column_name?: string;
   result: any;
   confidence: number;
   explanation: string;
-  importance: 'low' | 'medium' | 'high';
+  importance: 'low' | 'medium' | 'high' | 'critical';
+  quality_score?: number;
   created_at: string;
 }
 

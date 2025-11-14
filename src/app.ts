@@ -909,6 +909,7 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
         <script src="/static/chat.js"></script>
         <script src="/static/mongodb.js"></script>
         <script src="/static/cleaner.js"></script>
+        <script src="/static/advanced-features.js"></script>
     </body>
     </html>
   `);
