@@ -176,6 +176,219 @@ async function downloadStoryboardMarkdown() {
     }
 }
 
+// Get actionable button for theory suggested action
+function getActionButton(action, theory) {
+    const actionText = action.action.toLowerCase();
+
+    // Dimensionality reduction / PCA
+    if (actionText.includes('pca') || actionText.includes('dimensionality reduction') || actionText.includes('principal component')) {
+        return `<button onclick="executeTheoryAction('run_pca', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-chart-line mr-1"></i>Run PCA
+        </button>`;
+    }
+
+    // Data cleaning
+    if (actionText.includes('missing data') || actionText.includes('clean') || actionText.includes('handle outliers')) {
+        return `<button onclick="executeTheoryAction('open_cleaner', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-broom mr-1"></i>Open Cleaner
+        </button>`;
+    }
+
+    // Feature engineering
+    if (actionText.includes('feature engineering') || actionText.includes('transformation')) {
+        return `<button onclick="executeTheoryAction('view_features', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-magic mr-1"></i>View Features
+        </button>`;
+    }
+
+    // Correlation / relationship analysis
+    if (actionText.includes('correlation') || actionText.includes('relationship') || actionText.includes('join')) {
+        return `<button onclick="executeTheoryAction('view_correlations', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-project-diagram mr-1"></i>View Graph
+        </button>`;
+    }
+
+    // Temporal/time series analysis
+    if (actionText.includes('time') || actionText.includes('temporal') || actionText.includes('forecast') || actionText.includes('trend')) {
+        return `<button onclick="executeTheoryAction('view_trends', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-chart-area mr-1"></i>View Trends
+        </button>`;
+    }
+
+    // Statistical tests
+    if (actionText.includes('test') || actionText.includes('statistical') || actionText.includes('hypothesis')) {
+        return `<button onclick="executeTheoryAction('view_statistics', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-calculator mr-1"></i>View Stats
+        </button>`;
+    }
+
+    // Investigation / data quality
+    if (actionText.includes('investigate') || actionText.includes('inspect') || actionText.includes('validate')) {
+        return `<button onclick="executeTheoryAction('investigate', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+            <i class="fas fa-search mr-1"></i>Investigate
+        </button>`;
+    }
+
+    // Default: open insights filtered by related terms
+    return `<button onclick="executeTheoryAction('search_insights', ${JSON.stringify(action).replace(/"/g, '&quot;')})" class="neu-button px-3 py-1 text-xs">
+        <i class="fas fa-lightbulb mr-1"></i>Find Insights
+    </button>`;
+}
+
+// Execute theory action
+async function executeTheoryAction(actionType, action) {
+    console.log('Executing theory action:', actionType, action);
+
+    // Close the theories modal first
+    closeTheoriesModal();
+
+    // Small delay to let modal close
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'run_pca':
+            // Search for PCA in insights
+            const searchInput = document.querySelector('input[placeholder*="Search"]');
+            if (searchInput) {
+                searchInput.value = 'pca';
+                searchInput.dispatchEvent(new Event('input'));
+            }
+            // Show a guide
+            showActionGuide('PCA Analysis',
+                'Look for "PCA" or "Principal Component" insights in the list below. ' +
+                'If PCA hasn\'t run yet, it will appear after re-analyzing the dataset with 3+ numeric columns.');
+            break;
+
+        case 'open_cleaner':
+            // Try to open the cleaner panel
+            if (typeof window.openCleanerPanel === 'function') {
+                window.openCleanerPanel();
+            } else {
+                showActionGuide('Data Cleaning',
+                    'Navigate to the Data Cleaner section to address missing values and outliers. ' +
+                    'Use the cleaning suggestions to improve data quality.');
+            }
+            break;
+
+        case 'view_features':
+            // Search for feature suggestions
+            const featureSearch = document.querySelector('input[placeholder*="Search"]');
+            if (featureSearch) {
+                featureSearch.value = 'feature';
+                featureSearch.dispatchEvent(new Event('input'));
+            }
+            showActionGuide('Feature Engineering',
+                'Review the "Feature Engineering" insights below for transformation suggestions. ' +
+                'Click the action buttons to apply transformations to your data.');
+            break;
+
+        case 'view_correlations':
+            // Switch to graph tab if available
+            const graphTab = document.querySelector('[data-tab="graph"]');
+            if (graphTab) {
+                graphTab.click();
+                showActionGuide('Correlation Network',
+                    'The network graph visualizes relationships between variables. ' +
+                    'Strongly connected nodes indicate high correlation.');
+            } else {
+                const corrSearch = document.querySelector('input[placeholder*="Search"]');
+                if (corrSearch) {
+                    corrSearch.value = 'correlation';
+                    corrSearch.dispatchEvent(new Event('input'));
+                }
+            }
+            break;
+
+        case 'view_trends':
+            // Search for trend/time series insights
+            const trendSearch = document.querySelector('input[placeholder*="Search"]');
+            if (trendSearch) {
+                trendSearch.value = 'trend';
+                trendSearch.dispatchEvent(new Event('input'));
+            }
+            showActionGuide('Temporal Analysis',
+                'Review trend and time-series insights below. ' +
+                'Look for patterns, seasonality, and forecasting opportunities.');
+            break;
+
+        case 'view_statistics':
+            // Search for statistics
+            const statsSearch = document.querySelector('input[placeholder*="Search"]');
+            if (statsSearch) {
+                statsSearch.value = 'statistics';
+                statsSearch.dispatchEvent(new Event('input'));
+            }
+            showActionGuide('Statistical Analysis',
+                'Review statistical summaries and distribution insights below. ' +
+                'Look for skewness, outliers, and data quality indicators.');
+            break;
+
+        case 'investigate':
+            showActionGuide('Data Investigation',
+                `Action: ${action.action}\n\n` +
+                `Rationale: ${action.rationale}\n\n` +
+                `Next Steps:\n` +
+                `1. Review related insights in the list below\n` +
+                `2. Check the Data Canvas for sample data\n` +
+                `3. Use the network graph to explore relationships\n` +
+                `4. Consider generating a storyboard for comprehensive analysis`);
+            break;
+
+        case 'search_insights':
+            // Extract key terms from action and search
+            const keywords = extractKeywords(action.action);
+            const insightSearch = document.querySelector('input[placeholder*="Search"]');
+            if (insightSearch && keywords) {
+                insightSearch.value = keywords;
+                insightSearch.dispatchEvent(new Event('input'));
+            }
+            showActionGuide('Related Insights',
+                `Searching for insights related to: "${keywords || action.action}"\n\n` +
+                `Review the filtered insights below for relevant analysis.`);
+            break;
+    }
+}
+
+// Extract keywords from action text
+function extractKeywords(text) {
+    const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by']);
+    const words = text.toLowerCase()
+        .replace(/[^\w\s]/g, ' ')
+        .split(/\s+/)
+        .filter(w => w.length > 3 && !stopWords.has(w));
+    return words.length > 0 ? words[0] : null;
+}
+
+// Show action guide popup
+function showActionGuide(title, message) {
+    const guide = document.createElement('div');
+    guide.className = 'fixed top-20 right-4 neu-card p-4 max-w-md z-50 animate-slide-in';
+    guide.style.animation = 'slideInRight 0.3s ease-out';
+
+    guide.innerHTML = `
+        <div class="flex items-start justify-between mb-2">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-info-circle" style="color: var(--accent);"></i>
+                <h3 class="font-bold" style="color: var(--text-primary);">${title}</h3>
+            </div>
+            <button onclick="this.closest('.fixed').remove()" class="text-gray-500 hover:text-gray-700">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <p class="text-sm whitespace-pre-line" style="color: var(--text-primary);">${message}</p>
+    `;
+
+    document.body.appendChild(guide);
+
+    // Auto-remove after 10 seconds
+    setTimeout(() => {
+        if (guide.parentNode) {
+            guide.style.animation = 'slideOutRight 0.3s ease-in';
+            setTimeout(() => guide.remove(), 300);
+        }
+    }, 10000);
+}
+
 // Generate and display theories
 async function generateTheories() {
     if (!currentDatasetId) return;
@@ -249,17 +462,21 @@ function displayTheories(data) {
             <div>
                 <h4 class="font-semibold mb-2" style="color: var(--text-primary);">Suggested Actions</h4>
                 <div class="space-y-3">
-                    ${theory.suggested_actions.map(action => {
+                    ${theory.suggested_actions.map((action, actionIdx) => {
                         const priorityBg = action.priority === 'high' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(59, 130, 246, 0.15)';
                         const priorityColor = action.priority === 'high' ? '#d97706' : '#2563eb';
+                        const actionButton = getActionButton(action, theory);
                         return `
                             <div class="p-3 rounded-lg" style="background: var(--bg-secondary);">
-                                <div class="flex items-start gap-2 mb-1">
-                                    <span class="px-2 py-1 rounded text-xs font-semibold flex-shrink-0"
-                                          style="background: ${priorityBg}; color: ${priorityColor};">
-                                        ${action.priority.toUpperCase()}
-                                    </span>
-                                    <span class="font-semibold text-sm" style="color: var(--text-primary);">${action.action}</span>
+                                <div class="flex items-start justify-between gap-2 mb-1">
+                                    <div class="flex items-start gap-2 flex-1">
+                                        <span class="px-2 py-1 rounded text-xs font-semibold flex-shrink-0"
+                                              style="background: ${priorityBg}; color: ${priorityColor};">
+                                            ${action.priority.toUpperCase()}
+                                        </span>
+                                        <span class="font-semibold text-sm" style="color: var(--text-primary);">${action.action}</span>
+                                    </div>
+                                    ${actionButton}
                                 </div>
                                 <p class="text-xs ml-2 mb-1" style="color: var(--text-secondary);"><strong>Rationale:</strong> ${action.rationale}</p>
                                 <p class="text-xs ml-2" style="color: var(--text-secondary);"><strong>Expected:</strong> ${action.expected_outcome}</p>
@@ -414,3 +631,4 @@ window.closeStoryboardModal = closeStoryboardModal;
 window.closeTheoriesModal = closeTheoriesModal;
 window.downloadStoryboardMarkdown = downloadStoryboardMarkdown;
 window.addAdvancedFeatureButtons = addAdvancedFeatureButtons;
+window.executeTheoryAction = executeTheoryAction;
