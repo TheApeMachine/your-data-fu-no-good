@@ -310,6 +310,13 @@ async function loadDatasetResults(datasetId) {
         displayInsights(analyses);
         displaySampleData();
 
+        // Add advanced feature buttons (storyboard, theories)
+        setTimeout(() => {
+            if (typeof addAdvancedFeatureButtons === 'function') {
+                addAdvancedFeatureButtons();
+            }
+        }, 100);
+
         if (typeof loadTopics === 'function') {
             loadTopics(datasetId);
         }
