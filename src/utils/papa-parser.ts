@@ -20,6 +20,7 @@ export function parseCSV(content: string, options: ParseOptions = {}): Record<st
 
   const result = Papa.parse(content, {
     header: true,
+    worker: true,
     dynamicTyping: true,
     skipEmptyLines: true,
     transformHeader: (header) => header.trim(),
@@ -49,6 +50,7 @@ export async function parseCSVChunked(
 
     Papa.parse(content, {
       header: true,
+      worker: true,
       dynamicTyping: true,
       skipEmptyLines: true,
       transformHeader: (header) => header.trim(),

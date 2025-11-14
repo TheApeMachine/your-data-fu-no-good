@@ -2,19 +2,18 @@
 
 import { Hono } from 'hono';
 import { suggestKeyColumns, cleanDataset } from '../utils/data-cleaner';
-import type { Bindings, ColumnDefinition, Analysis } from '../types';
+import type { Bindings, ColumnDefinition } from '../types';
 import { resolveDatabase } from '../storage';
 import { profileColumns } from '../utils/column-profiler';
 import { analyzeDataset } from '../utils/analyzer';
 import { generateVisualizations } from '../utils/visualizer';
 import type { CleaningOptions } from '../utils/data-cleaner';
-import type { DatabaseBinding } from '../storage/types';
 
 const clean = new Hono<{ Bindings: Bindings }>();
 
 clean.get('/:id/suggestions', async (c) => {
   try {
-    const db: DatabaseBinding = c.env.DB;
+    const db = resolveDatabase(c.env);
     const datasetId = Number(c.req.param('id'));
     const rowsResult = await db.prepare(`SELECT data FROM data_rows WHERE dataset_id = ? LIMIT 1000`).bind(datasetId).all();
     const dataset = await db.prepare(`SELECT columns FROM datasets WHERE id = ?`).bind(datasetId).first();
@@ -40,7 +39,7 @@ clean.get('/:id/suggestions', async (c) => {
 
 clean.post('/:id', async (c) => {
   try {
-    const db: DatabaseBinding = c.env.DB;
+    const db = resolveDatabase(c.env);
     const datasetId = Number(c.req.param('id'));
     const options: CleaningOptions = await c.req.json();
     const rowsResult = await db.prepare(`SELECT data FROM data_rows WHERE dataset_id = ?`).bind(datasetId).all();
@@ -82,7 +81,21 @@ clean.post('/:id', async (c) => {
       JSON.stringify(newColumns)
     ).run();
 
-    const newDatasetId = insertResult.meta.last_row_id as number;
+    let newDatasetId = insertResult.meta.last_row_id as number | undefined;
+
+    // If last_row_id wasn't returned, query for it
+    if (!newDatasetId) {
+      const lastIdResult = await db.prepare(
+        `SELECT id FROM datasets WHERE name = ? ORDER BY id DESC LIMIT 1`
+      ).bind(cleanedName).first();
+      if (lastIdResult) {
+        newDatasetId = (lastIdResult as any).id as number;
+      }
+    }
+
+    if (!newDatasetId) {
+      throw new Error('Failed to get new dataset ID after insert');
+    }
 
     console.log(`Inserting ${result.cleanedRowCount} cleaned rows...`);
     const batchSize = 100;
@@ -109,6 +122,7 @@ clean.post('/:id', async (c) => {
     return c.json({
       success: true,
       newDatasetId,
+      cleanedDatasetId: newDatasetId, // Frontend expects this property name
       originalRowCount: result.originalRowCount,
       cleanedRowCount: result.cleanedRowCount,
       removedRowCount: result.removedRowCount,

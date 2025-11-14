@@ -1,0 +1,39 @@
+services:
+  webapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      - NODE_ENV=production
+      - NLP_SERVICE_URL=http://nlp-service:8001
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - nlp-service
+    restart: unless-stopped
+
+  nlp-service:
+    build:
+      context: ./services/nlp-service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - TRANSFORMERS_CACHE=/app/models
+    volumes:
+      - nlp-models:/app/models
+    restart: unless-stopped
+    # Optional: Use GPU if available
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  nlp-models:
+

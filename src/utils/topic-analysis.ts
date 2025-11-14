@@ -6,7 +6,10 @@ const CLUSTER_THRESHOLD = 0.35;
 const MAX_SHARED_TERMS = 6;
 
 const STOPWORDS = new Set([
-  'the','and','for','with','that','from','this','have','been','were','will','shall','would','should','about','there','their','which','into','onto','near','over','under','within','without','between','among','after','before','because','while','where','when','what','whose','like','just','such','than','then','they','them','these','those','your','ours','ourselves','hers','herself','him','himself','hers','its','itself','it','our','you','yourself','yourselves','are','was','is','be','being','been','can','could','may','might','must','do','does','did','done','doing','not','but','also','only','other','all','any','each','few','more','most','some','many','much','very','per','via','amp','http','https','www','com','org','net','inc','ltd','co','project','company','team','data','info','information'
+  // English stopwords
+  'the','and','for','with','that','from','this','have','been','were','will','shall','would','should','about','there','their','which','into','onto','near','over','under','within','without','between','among','after','before','because','while','where','when','what','whose','like','just','such','than','then','they','them','these','those','your','ours','ourselves','hers','herself','him','himself','hers','its','itself','it','our','you','yourself','yourselves','are','was','is','be','being','been','can','could','may','might','must','do','does','did','done','doing','not','but','also','only','other','all','any','each','few','more','most','some','many','much','very','per','via','amp','http','https','www','com','org','net','inc','ltd','co','project','company','team','data','info','information',
+  // Dutch stopwords - articles, pronouns, prepositions, common verbs
+  'de','het','een','en','van','in','is','op','te','dat','voor','met','die','aan','zijn','er','als','bij','ook','naar','om','over','kan','zou','deze','dit','zo','maar','meer','dan','wel','niet','geen','was','wat','wie','waar','hoe','waarom','welke','welk','welken','mijn','jouw','haar','ons','jullie','hun','mij','jou','hem','hen','ik','jij','hij','zij','wij','me','je','ben','bent','waren','geweest','worden','wordt','word','werd','werden','hebben','heeft','heb','had','hadden','kunnen','kon','konden','moeten','moest','moesten','zullen','zal','zouden','willen','wil','wilt','wilde','wilden','mogen','mocht','mochten','doen','doet','deed','deden','gaan','gaat','ging','gingen','komen','komt','kwam','kwamen','zien','ziet','zag','zagen','zeggen','zegt','zei','zeiden','weten','weet','wist','wisten','denken','denkt','dacht','dachten','vinden','vindt','vond','vonden','geven','geeft','gaf','gaven','nemen','neemt','nam','namen','krijgen','krijgt','kreeg','kregen','maken','maakt','maakte','maakten','blijven','blijft','bleef','bleven','staan','staat','stond','stonden','liggen','ligt','lag','lagen','zitten','zit','zat','zaten','lopen','loopt','liep','liepen','onder','tussen','door','tijdens','gedurende','sinds','tot','tegen','tegenover','naast','achter','boven','binnen','buiten','zonder'
 ]);
 
 export interface TextTopic {
@@ -16,6 +19,14 @@ export interface TextTopic {
   keywords: Array<{ term: string; score: number }>;
   samples: Array<{ row_number: number; excerpt: string }>;
   vector: Array<{ term: string; weight: number }>;
+  sentiment?: {
+    label: 'positive' | 'negative' | 'neutral';
+    confidence: number;
+  };
+  intent?: {
+    label: 'question' | 'complaint' | 'request' | 'information' | 'feedback' | 'other';
+    confidence: number;
+  };
 }
 
 export interface TopicCluster {
@@ -44,6 +55,9 @@ function safeParseJson(value: unknown) {
   }
   return null;
 }
+
+// Sentiment and intent analysis now handled by Python NLP service
+// See src/utils/nlp-client.ts for the client implementation
 
 function tokenize(text: string): string[] {
   return text
@@ -148,6 +162,9 @@ export async function computeTextTopics(
   const topics: TextTopic[] = [];
   const columnVectors = new Map<string, Map<string, number>>();
 
+  // Collect all sample texts for batch NLP processing
+  const allSampleTexts: Array<{ column: string; texts: string[] }> = [];
+
   for (const column of columnDefinitions) {
     if (String(column.type || '').toLowerCase() !== 'string') continue;
 
@@ -208,6 +225,10 @@ export async function computeTextTopics(
     // Use 5% of unique terms, but clamp between 8 and 20 keywords for display
     const finalKeywordCount = Math.max(8, Math.min(20, Math.round(uniqueTermCount * 0.10)));
 
+    // Store sample texts for batch processing later
+    const sampleTexts = samples.map(s => s.excerpt);
+    allSampleTexts.push({ column: column.name, texts: sampleTexts });
+
     topics.push({
       column: column.name,
       document_count: docCount,
@@ -215,7 +236,112 @@ export async function computeTextTopics(
       keywords: topKeywords.slice(0, finalKeywordCount),
       samples,
       vector: topKeywords.map(({ term, score }) => ({ term, weight: score })),
+      // sentiment and intent will be added after batch processing
     });
+  }
+
+  // Batch process all sentiment and intent analysis
+  if (allSampleTexts.length > 0) {
+    try {
+      const { analyzeSentiment, classifyIntent } = await import('./nlp-client');
+
+      // Collect all texts for batch processing
+      const allTexts: string[] = [];
+      const textToColumn: Map<number, string> = new Map();
+      let textIndex = 0;
+
+      for (const { column, texts } of allSampleTexts) {
+        for (const text of texts) {
+          allTexts.push(text);
+          textToColumn.set(textIndex, column);
+          textIndex++;
+        }
+      }
+
+      // Batch analyze all texts at once (much more efficient)
+      const sentimentResults = await analyzeSentiment(allTexts);
+      const intentResults = await classifyIntent(allTexts);
+
+      // Map results back to topics
+      const topicSentiments = new Map<string, Array<{ label: string; confidence: number }>>();
+      const topicIntents = new Map<string, Array<{ label: string; confidence: number }>>();
+
+      let currentIndex = 0;
+      for (const { column, texts } of allSampleTexts) {
+        const columnSentiments: Array<{ label: string; confidence: number }> = [];
+        const columnIntents: Array<{ label: string; confidence: number }> = [];
+
+        for (let i = 0; i < texts.length; i++) {
+          if (sentimentResults[currentIndex]) {
+            columnSentiments.push(sentimentResults[currentIndex]);
+          }
+          if (intentResults[currentIndex]) {
+            columnIntents.push(intentResults[currentIndex]);
+          }
+          currentIndex++;
+        }
+
+        topicSentiments.set(column, columnSentiments);
+        topicIntents.set(column, columnIntents);
+      }
+
+      // Aggregate and assign to topics
+      for (const topic of topics) {
+        const sentiments = topicSentiments.get(topic.column) || [];
+        const intents = topicIntents.get(topic.column) || [];
+
+        if (sentiments.length > 0) {
+          // Aggregate sentiment
+          const positiveCount = sentiments.filter(s => s.label === 'positive').length;
+          const negativeCount = sentiments.filter(s => s.label === 'negative').length;
+          const neutralCount = sentiments.filter(s => s.label === 'neutral').length;
+
+          const total = sentiments.length;
+          const positiveRatio = positiveCount / total;
+          const negativeRatio = negativeCount / total;
+          const diff = positiveRatio - negativeRatio;
+
+          if (diff > 0.1) {
+            topic.sentiment = { label: 'positive', confidence: positiveRatio };
+          } else if (diff < -0.1) {
+            topic.sentiment = { label: 'negative', confidence: negativeRatio };
+          } else {
+            topic.sentiment = { label: 'neutral', confidence: neutralCount / total };
+          }
+        }
+
+        if (intents.length > 0) {
+          // Aggregate intent - find most common
+          const intentCounts = new Map<string, number>();
+          let totalConfidence = 0;
+
+          for (const intent of intents) {
+            intentCounts.set(intent.label, (intentCounts.get(intent.label) || 0) + 1);
+            totalConfidence += intent.confidence;
+          }
+
+          let maxCount = 0;
+          let dominantIntent = 'other';
+          for (const [intent, count] of intentCounts.entries()) {
+            if (count > maxCount) {
+              maxCount = count;
+              dominantIntent = intent;
+            }
+          }
+
+          const avgConfidence = totalConfidence / intents.length;
+          const frequencyConfidence = maxCount / intents.length;
+
+          topic.intent = {
+            label: dominantIntent as any,
+            confidence: (avgConfidence + frequencyConfidence) / 2,
+          };
+        }
+      }
+    } catch (error) {
+      console.warn('NLP service unavailable, skipping sentiment/intent analysis:', error);
+      // Topics will have undefined sentiment/intent
+    }
   }
 
   // Compute similarities between columns

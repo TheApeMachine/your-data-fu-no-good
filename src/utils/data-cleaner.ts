@@ -123,10 +123,10 @@ function removeRowsWithTooManyEmpties(
   return rows.filter(row => {
     const emptyCount = columns.filter(col => {
       const value = row[col.name];
-      return value === null || value === undefined || value === '' || 
+      return value === null || value === undefined || value === '' ||
              (typeof value === 'string' && value.trim() === '');
     }).length;
-    
+
     const emptyRatio = emptyCount / columns.length;
     return emptyRatio <= threshold;
   });
@@ -155,7 +155,7 @@ function trimWhitespace(
   columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
-  
+
   return rows.map(row => {
     const cleaned = { ...row };
     for (const col of stringColumns) {
@@ -191,7 +191,7 @@ function standardizeText(
   columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
-  
+
   return rows.map(row => {
     const cleaned = { ...row };
     for (const col of stringColumns) {
@@ -213,26 +213,26 @@ function fillNumericGaps(
   columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const numericColumns = columns.filter(c => c.type === 'number').map(c => c.name);
-  
+
   // Calculate averages for each numeric column
   const averages: Record<string, number> = {};
-  
+
   for (const col of numericColumns) {
     const values = rows
       .map(r => r[col])
       .filter(v => v !== null && v !== undefined && !isNaN(Number(v)))
       .map(v => Number(v));
-    
+
     const emptyCount = rows.length - values.length;
     const emptyRatio = emptyCount / rows.length;
-    
+
     // Only fill if <5% missing
     if (emptyRatio < 0.05 && emptyRatio > 0) {
       const sum = values.reduce((a, b) => a + b, 0);
       averages[col] = sum / values.length;
     }
   }
-  
+
   // Fill gaps
   return rows.map(row => {
     const cleaned = { ...row };
@@ -253,35 +253,43 @@ function removeOutlierRows(
   columns: ColumnDefinition[]
 ): Record<string, any>[] {
   const numericColumns = columns.filter(c => c.type === 'number').map(c => c.name);
-  
-  // Detect outliers for each numeric column
-  const outlierIndicesByColumn: Record<string, Set<number>> = {};
-  
+
+  // Detect outliers for each numeric column, mapping indices back to original rows
+  const outlierRowIndices = new Set<number>();
+
   for (const col of numericColumns) {
-    const values = rows.map(r => {
-      const val = r[col];
-      return val !== null && val !== undefined ? Number(val) : NaN;
-    }).filter(v => !isNaN(v));
-    
-    if (values.length > 10) { // Need enough data
+    // Map each row index to its value, keeping track of original indices
+    const indexedValues: Array<{ originalIdx: number; value: number }> = [];
+    rows.forEach((row, idx) => {
+      const val = row[col];
+      if (val !== null && val !== undefined) {
+        const numVal = Number(val);
+        if (!isNaN(numVal)) {
+          indexedValues.push({ originalIdx: idx, value: numVal });
+        }
+      }
+    });
+
+    if (indexedValues.length > 10) { // Need enough data
+      const values = indexedValues.map(iv => iv.value);
       const outlierResult = detectOutliers(values);
-      outlierIndicesByColumn[col] = new Set(outlierResult.indices);
-    }
-  }
-  
-  // Remove rows that have outliers in ANY numeric column
-  return rows.filter((row, idx) => {
-    for (const col in outlierIndicesByColumn) {
-      if (outlierIndicesByColumn[col].has(idx)) {
-        return false; // This row has an outlier
+
+      // Map filtered array indices back to original row indices
+      for (const filteredIdx of outlierResult.indices) {
+        if (filteredIdx >= 0 && filteredIdx < indexedValues.length) {
+          outlierRowIndices.add(indexedValues[filteredIdx].originalIdx);
+        }
       }
     }
-    return true;
-  });
+  }
+
+  // Remove rows that have outliers in ANY numeric column
+  return rows.filter((row, idx) => !outlierRowIndices.has(idx));
 }
 
 /**
  * Remove rows with rare category values (appearing < threshold frequency)
+ * Limits removal to prevent removing all rows - caps at 50% of rows
  */
 function removeRareCategoryRows(
   rows: Record<string, any>[],
@@ -289,23 +297,29 @@ function removeRareCategoryRows(
   threshold: number
 ): Record<string, any>[] {
   const stringColumns = columns.filter(c => c.type === 'string').map(c => c.name);
-  
+
+  if (stringColumns.length === 0) return rows;
+
   // Calculate frequencies for each string column
   const rareCategoriesByColumn: Record<string, Set<string>> = {};
-  
+
   for (const col of stringColumns) {
     const frequency: Record<string, number> = {};
     let totalCount = 0;
-    
+
     for (const row of rows) {
       const value = row[col];
       if (value !== null && value !== undefined && value !== '') {
-        const key = String(value);
+        const key = String(value).toLowerCase(); // Normalize for comparison
         frequency[key] = (frequency[key] || 0) + 1;
         totalCount++;
       }
     }
-    
+
+    // Only process columns with enough distinct values (at least 3)
+    const distinctCount = Object.keys(frequency).length;
+    if (distinctCount < 3) continue; // Skip columns with too few categories
+
     // Find rare categories
     const rareCategories = new Set<string>();
     for (const [category, count] of Object.entries(frequency)) {
@@ -313,22 +327,36 @@ function removeRareCategoryRows(
         rareCategories.add(category);
       }
     }
-    
-    if (rareCategories.size > 0) {
+
+    // Don't mark all categories as rare (would remove everything)
+    if (rareCategories.size > 0 && rareCategories.size < distinctCount) {
       rareCategoriesByColumn[col] = rareCategories;
     }
   }
-  
-  // Remove rows that have rare categories
-  return rows.filter(row => {
+
+  if (Object.keys(rareCategoriesByColumn).length === 0) {
+    return rows; // No rare categories found
+  }
+
+  // Identify rows to remove, but limit to 50% of total rows
+  const rowsToRemove = new Set<number>();
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     for (const col in rareCategoriesByColumn) {
-      const value = String(row[col]);
+      const value = String(row[col] || '').toLowerCase();
       if (rareCategoriesByColumn[col].has(value)) {
-        return false; // This row has a rare category
+        rowsToRemove.add(idx);
+        break; // Only count once per row
       }
     }
-    return true;
-  });
+
+    // Safety cap: don't remove more than 50% of rows
+    if (rowsToRemove.size >= Math.floor(rows.length * 0.5)) {
+      break;
+    }
+  }
+
+  return rows.filter((row, idx) => !rowsToRemove.has(idx));
 }
 
 /**
@@ -339,22 +367,22 @@ export function suggestKeyColumns(
   columns: ColumnDefinition[]
 ): string[] {
   const suggestions: string[] = [];
-  
+
   for (const col of columns) {
     const values = rows.map(r => r[col.name]);
     const nonNullCount = values.filter(v => v !== null && v !== undefined && v !== '').length;
     const nullRatio = 1 - (nonNullCount / rows.length);
-    
+
     // Suggest columns with <10% nulls
     if (nullRatio < 0.1) {
       // Prefer ID-like columns and important-sounding names
       const colLower = col.name.toLowerCase();
-      if (colLower.includes('id') || colLower.includes('key') || 
+      if (colLower.includes('id') || colLower.includes('key') ||
           colLower.includes('name') || colLower.includes('email')) {
         suggestions.push(col.name);
       }
     }
   }
-  
+
   return suggestions;
 }

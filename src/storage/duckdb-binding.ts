@@ -243,7 +243,13 @@ export class DuckDBBinding implements DatabaseBinding {
       const values = params ?? [];
       const runCallback = function (this: any, err: Error | null) {
         if (err) {
-          console.error('DuckDB execute error:', sql, values, err);
+          // Suppress logging for index already exists errors (handled gracefully elsewhere)
+          const errorMsg = (err as any)?.message || '';
+          const isIndexExistsError = errorMsg.includes('already exists') &&
+                                     errorMsg.includes('idx_forensic_case_events_unique');
+          if (!isIndexExistsError) {
+            console.error('DuckDB execute error:', sql, values, err);
+          }
           reject(err);
         } else if (options.skipLastId) {
           resolve({});

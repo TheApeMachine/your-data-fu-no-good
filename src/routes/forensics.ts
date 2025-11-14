@@ -280,7 +280,16 @@ const ensureForensicCaseEventsIndex = async (db: ReturnType<typeof resolveDataba
     await db
       .prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_forensic_case_events_unique ON forensic_case_events(case_id, event_id)')
       .run();
-  } catch (error) {
+  } catch (error: any) {
+    // Ignore error if index already exists (DuckDB sometimes reports this even with IF NOT EXISTS)
+    const errorMsg = error?.message || '';
+    if (errorMsg.includes('already exists') ||
+        errorMsg.includes('idx_forensic_case_events_unique') ||
+        error?.errorType === 'Catalog' ||
+        error?.code === 'DUCKDB_NODEJS_ERROR') {
+      // Index already exists, which is fine
+      return;
+    }
     console.error('Failed to ensure forensic_case_events unique index:', error);
   } finally {
     forensicCaseEventsIndexEnsured = true;

@@ -59,11 +59,111 @@ async function loadRelationshipGraph(datasetId) {
     }
 }
 
+// Graph filter state
+let graphNodeFilters = {
+    column: true,
+    topic: true,
+    topic_cluster: true,
+    value: true
+};
+let graphEdgeFilters = {
+    correlation: true,
+    association: true,
+    topic: true,
+    topic_similarity: true,
+    topic_cluster: true,
+    contains: true
+};
+let graphSearchTerm = '';
+let allGraphNodes = [];
+let allGraphEdges = [];
+
 function renderGraph(nodes, edges) {
     const container = document.getElementById('graph-container');
 
-    // Clear container
-    container.innerHTML = '<div id="cy" style="width: 100%; height: 100%;"></div>';
+    // Store nodes and edges for filtering
+    allGraphNodes = nodes;
+    allGraphEdges = edges;
+
+    // Clear container and add controls
+    container.innerHTML = `
+        <div class="absolute top-4 right-4 z-10 flex flex-col gap-3" style="max-width: 280px;">
+            <!-- Search and Legend Panel -->
+            <div class="neu-card p-4">
+                <div class="mb-3">
+                    <label class="text-xs font-semibold mb-1 block" style="color: var(--text-secondary);">Search Nodes</label>
+                    <input type="text"
+                           id="graph-search-input"
+                           placeholder="Type to search..."
+                           class="w-full px-3 py-2 rounded neu-card-inset text-sm"
+                           style="color: var(--text-primary); background: var(--bg-secondary); border: none; outline: none;">
+                </div>
+
+                <!-- Node Type Filters -->
+                <div class="mb-3">
+                    <label class="text-xs font-semibold mb-2 block" style="color: var(--text-secondary);">Node Types</label>
+                    <div class="space-y-1">
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="node-filter" data-type="column" checked>
+                            <div class="w-3 h-3 rounded-full" style="background: #3b82f6;"></div>
+                            <span style="color: var(--text-primary);">Columns</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="node-filter" data-type="topic" checked>
+                            <div class="w-3 h-3 rounded-full" style="background: #14b8a6;"></div>
+                            <span style="color: var(--text-primary);">Topics</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="node-filter" data-type="topic_cluster" checked>
+                            <div class="w-3 h-3 rounded-full" style="background: #0ea5e9;"></div>
+                            <span style="color: var(--text-primary);">Topic Clusters</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="node-filter" data-type="value" checked>
+                            <div class="w-3 h-3 rounded-full" style="background: #10b981;"></div>
+                            <span style="color: var(--text-primary);">Values</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Edge Type Filters -->
+                <div>
+                    <label class="text-xs font-semibold mb-2 block" style="color: var(--text-secondary);">Edge Types</label>
+                    <div class="space-y-1">
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="edge-filter" data-type="correlation" checked>
+                            <div class="w-8 h-0.5" style="background: #a855f7;"></div>
+                            <span style="color: var(--text-primary);">Correlations</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="edge-filter" data-type="association" checked>
+                            <div class="w-8 h-0.5" style="background: #f97316;"></div>
+                            <span style="color: var(--text-primary);">Associations</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="edge-filter" data-type="topic" checked>
+                            <div class="w-8 h-0.5" style="background: #14b8a6;"></div>
+                            <span style="color: var(--text-primary);">Topic Links</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="edge-filter" data-type="topic_similarity" checked>
+                            <div class="w-8 h-0.5" style="background: #0ea5e9;"></div>
+                            <span style="color: var(--text-primary);">Topic Similarity</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer text-xs">
+                            <input type="checkbox" class="edge-filter" data-type="contains" checked>
+                            <div class="w-8 h-0.5" style="background: #94a3b8;"></div>
+                            <span style="color: var(--text-primary);">Contains</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="cy" style="width: 100%; height: 100%;"></div>
+    `;
+
+    // Setup search and filter handlers
+    setupGraphFilters();
 
     // Find nodes that have at least one connection
     const connectedNodeIds = new Set();
@@ -233,6 +333,146 @@ function renderGraph(nodes, edges) {
     initialiseGraphInteractions();
     applyGlobalLayout(currentLayoutName);
     applyPendingFocus();
+
+    // Apply initial filters after graph is ready
+    setTimeout(() => applyGraphFilters(), 100);
+}
+
+function applyGraphFilters() {
+    if (!cy || allGraphNodes.length === 0) return;
+
+    // Filter nodes based on type filters and search
+    const filteredNodes = allGraphNodes.filter(node => {
+        // Check node type filter
+        if (!graphNodeFilters[node.type]) return false;
+
+        // Check search term
+        if (graphSearchTerm) {
+            const searchLower = graphSearchTerm.toLowerCase();
+            const labelLower = (node.label || '').toLowerCase();
+            if (!labelLower.includes(searchLower)) return false;
+        }
+
+        return true;
+    });
+
+    // Filter edges based on edge type filters and whether their nodes are visible
+    const visibleNodeIds = new Set(filteredNodes.map(n => n.id));
+    const filteredEdges = allGraphEdges.filter(edge => {
+        // Check edge type filter
+        if (!graphEdgeFilters[edge.type]) return false;
+
+        // Check if both source and target nodes are visible
+        if (!visibleNodeIds.has(edge.source) || !visibleNodeIds.has(edge.target)) return false;
+
+        return true;
+    });
+
+    // Update connected nodes based on filtered edges
+    const connectedNodeIds = new Set();
+    filteredEdges.forEach(edge => {
+        connectedNodeIds.add(edge.source);
+        connectedNodeIds.add(edge.target);
+    });
+
+    // Only show nodes that are in filtered set AND have connections
+    const connectedNodes = filteredNodes.filter(node => connectedNodeIds.has(node.id));
+
+    // Hide/show nodes and edges in the graph
+    cy.nodes().forEach(node => {
+        const nodeId = node.data('id');
+        const shouldShow = connectedNodes.some(n => n.id === nodeId);
+        if (shouldShow) {
+            node.removeClass('faded');
+            node.style('display', 'element');
+        } else {
+            node.addClass('faded');
+            node.style('display', 'none');
+        }
+    });
+
+    cy.edges().forEach(edge => {
+        const edgeType = edge.data('type');
+        const sourceId = edge.data('source');
+        const targetId = edge.data('target');
+        const shouldShow = graphEdgeFilters[edgeType] &&
+                          connectedNodeIds.has(sourceId) &&
+                          connectedNodeIds.has(targetId);
+        if (shouldShow) {
+            edge.removeClass('faded');
+            edge.style('display', 'element');
+        } else {
+            edge.addClass('faded');
+            edge.style('display', 'none');
+        }
+    });
+
+    // Highlight search matches
+    if (graphSearchTerm) {
+        highlightSearchMatches();
+    } else {
+        cy.nodes().removeClass('highlighted');
+    }
+}
+
+function setupGraphFilters() {
+    // Search input handler
+    const searchInput = document.getElementById('graph-search-input');
+    if (searchInput) {
+        let searchTimeout;
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            graphSearchTerm = e.target.value.trim();
+            searchTimeout = setTimeout(() => {
+                applyGraphFilters();
+            }, 300);
+        });
+    }
+
+    // Node filter checkboxes
+    document.querySelectorAll('.node-filter').forEach(checkbox => {
+        checkbox.addEventListener('change', (e) => {
+            const type = e.target.dataset.type;
+            graphNodeFilters[type] = e.target.checked;
+            applyGraphFilters();
+        });
+    });
+
+    // Edge filter checkboxes
+    document.querySelectorAll('.edge-filter').forEach(checkbox => {
+        checkbox.addEventListener('change', (e) => {
+            const type = e.target.dataset.type;
+            graphEdgeFilters[type] = e.target.checked;
+            applyGraphFilters();
+        });
+    });
+}
+
+function highlightSearchMatches() {
+    if (!cy || !graphSearchTerm) return;
+
+    const searchLower = graphSearchTerm.toLowerCase();
+    let firstMatch = null;
+
+    cy.nodes().forEach(node => {
+        const label = (node.data('label') || '').toLowerCase();
+        if (label.includes(searchLower) && node.style('display') === 'element') {
+            node.addClass('highlighted');
+            if (!firstMatch) {
+                firstMatch = node;
+            }
+        } else {
+            node.removeClass('highlighted');
+        }
+    });
+
+    // Zoom to first match if found
+    if (firstMatch) {
+        cy.animate({
+            center: { eles: firstMatch },
+            zoom: Math.min(2.5, Math.max(1.2, cy.zoom() * 1.3))
+        }, { duration: 500 });
+    }
 }
 
 function getLayoutOptions(name) {
@@ -532,6 +772,8 @@ function initialiseGraphInteractions() {
 
     cy.on('tap', 'node', function (evt) {
         const node = evt.target;
+        const nodeId = node.data('id');
+        const nodeType = node.data('type');
 
         if (previousPositions) {
             restorePositions(false, false);
@@ -540,6 +782,9 @@ function initialiseGraphInteractions() {
         }
 
         highlightNeighborhood(node);
+
+        // Show node detail panel
+        showNodeDetailPanel(nodeId, nodeType);
     });
 
     cy.on('tap', function (evt) {
@@ -549,6 +794,7 @@ function initialiseGraphInteractions() {
                 restorePositions(true, true);
             }
             clearHighlights();
+            closeNodeDetailPanel(); // Close panel when clicking background
             if (!hadPositions) {
                 applyGlobalLayout(currentLayoutName);
             }
@@ -590,8 +836,43 @@ async function loadTopics(datasetId) {
             const columnSlug = String(topic.column ?? '').replace(/'/g, "\\'");
 
             const samples = (topic.samples || [])
-                .map((sample) => `<li class="border-l-2 pl-3 text-sm" style="border-color: rgba(148, 163, 184, 0.4); color: var(--text-secondary);"><strong style="color: var(--text-primary);">Row ${sample.row_number + 1}:</strong> ${escapeHtml(sample.excerpt)}</li>`)
+                .map((sample) => `<li class="border-l-2 pl-3 text-sm" style="border-color: rgba(148, 163, 184, 0.4); color: var(--text-secondary);"><span style="color: var(--text-primary); font-weight: bold;">Row ${sample.row_number + 1}:</span> ${escapeHtml(sample.excerpt)}</li>`)
                 .join('');
+
+            // Sentiment badge
+            const sentimentBadge = topic.sentiment ? (() => {
+                const colors = {
+                    positive: { bg: 'rgba(16,185,129,0.12)', text: '#10b981', icon: 'fa-smile' },
+                    negative: { bg: 'rgba(239,68,68,0.12)', text: '#ef4444', icon: 'fa-frown' },
+                    neutral: { bg: 'rgba(148,163,184,0.12)', text: '#94a3b8', icon: 'fa-meh' }
+                };
+                const color = colors[topic.sentiment.label] || colors.neutral;
+                const confidence = Math.round((topic.sentiment.confidence || 0) * 100);
+                return `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs" style="background: ${color.bg}; color: ${color.text};">
+                    <i class="fas ${color.icon}"></i>
+                    <span>${topic.sentiment.label}</span>
+                    ${confidence > 60 ? `<span style="opacity: 0.7;">${confidence}%</span>` : ''}
+                </span>`;
+            })() : '';
+
+            // Intent badge
+            const intentBadge = topic.intent ? (() => {
+                const colors = {
+                    question: { bg: 'rgba(59,130,246,0.12)', text: '#3b82f6', icon: 'fa-question-circle' },
+                    complaint: { bg: 'rgba(239,68,68,0.12)', text: '#ef4444', icon: 'fa-exclamation-triangle' },
+                    request: { bg: 'rgba(139,92,246,0.12)', text: '#8b5cf6', icon: 'fa-hand-paper' },
+                    information: { bg: 'rgba(14,165,233,0.12)', text: '#0ea5e9', icon: 'fa-info-circle' },
+                    feedback: { bg: 'rgba(249,115,22,0.12)', text: '#f97316', icon: 'fa-comment' },
+                    other: { bg: 'rgba(148,163,184,0.12)', text: '#94a3b8', icon: 'fa-circle' }
+                };
+                const color = colors[topic.intent.label] || colors.other;
+                const confidence = Math.round((topic.intent.confidence || 0) * 100);
+                return `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs" style="background: ${color.bg}; color: ${color.text};">
+                    <i class="fas ${color.icon}"></i>
+                    <span>${topic.intent.label}</span>
+                    ${confidence > 60 ? `<span style="opacity: 0.7;">${confidence}%</span>` : ''}
+                </span>`;
+            })() : '';
 
             return `
                 <div class="neu-card p-5 flex flex-col gap-4">
@@ -600,7 +881,11 @@ async function loadTopics(datasetId) {
                             <h3 class="text-lg font-semibold" style="color: var(--text-primary);">${escapeHtml(topic.column)}</h3>
                             <p class="text-xs" style="color: var(--text-secondary);">${topic.document_count.toLocaleString()} records • Avg length ${topic.average_length} chars</p>
                         </div>
-                        <span class="text-xs px-2 py-1 rounded-full" style="background: rgba(59,130,246,0.12); color: #2563eb;">Text Column</span>
+                        <div class="flex items-center gap-2">
+                            ${sentimentBadge}
+                            ${intentBadge}
+                            <span class="text-xs px-2 py-1 rounded-full" style="background: rgba(59,130,246,0.12); color: #2563eb;">Text Column</span>
+                        </div>
                     </div>
                     <div class="flex flex-wrap gap-2">${keywords}</div>
                     <div class="flex items-center justify-between gap-3">
@@ -752,3 +1037,246 @@ function showAddMappingForm() {
     // TODO: Implement add mapping form
     alert('Add mapping form coming soon!');
 }
+
+// Node Detail Panel - Shows everything the system knows about a node
+let currentNodeDetailPanel = null;
+
+async function showNodeDetailPanel(nodeId, nodeType) {
+    if (!currentDatasetId) return;
+
+    // Remove existing panel if any
+    if (currentNodeDetailPanel) {
+        currentNodeDetailPanel.remove();
+        currentNodeDetailPanel = null;
+    }
+
+    // Create panel container
+    const panel = document.createElement('div');
+    panel.id = 'node-detail-panel';
+    panel.className = 'fixed left-0 top-0 h-full w-full md:w-96 bg-opacity-95 z-50 overflow-y-auto';
+    panel.style.cssText = 'background: var(--bg-primary); box-shadow: 4px 0 12px rgba(0,0,0,0.15);';
+
+    panel.innerHTML = `
+        <div class="p-6">
+            <div class="flex items-center justify-between mb-6">
+                <h2 class="text-xl font-bold" style="color: var(--text-primary);">Node Details</h2>
+                <button onclick="closeNodeDetailPanel()" class="neu-button p-2" title="Close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div id="node-detail-content" class="space-y-4">
+                <div class="text-center py-8">
+                    <i class="fas fa-spinner fa-spin text-2xl" style="color: var(--accent);"></i>
+                    <p class="text-sm mt-2" style="color: var(--text-secondary);">Loading node details...</p>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(panel);
+    currentNodeDetailPanel = panel;
+
+    // Load node details
+    try {
+        const response = await axios.get(`/api/relationships/${currentDatasetId}/node/${nodeId}`);
+        const data = response.data;
+
+        renderNodeDetails(data, panel.querySelector('#node-detail-content'));
+    } catch (error) {
+        console.error('Error loading node details:', error);
+        panel.querySelector('#node-detail-content').innerHTML = `
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-exclamation-triangle text-2xl mb-2" style="color: #ef4444;"></i>
+                <p class="text-sm" style="color: var(--text-secondary);">Failed to load node details</p>
+            </div>
+        `;
+    }
+}
+
+function renderNodeDetails(data, container) {
+    const { nodeId, nodeType, column, statistics, analyses, visualizations, sampleRows, connections, topicInfo, totalRows } = data;
+
+    let html = '';
+
+    // Header with node info
+    html += `
+        <div class="neu-card p-4 mb-4">
+            <div class="flex items-center gap-3 mb-2">
+                <div class="w-3 h-3 rounded-full" style="background: ${getNodeColor(nodeType)};"></div>
+                <h3 class="font-bold text-lg m-0" style="color: var(--text-primary);">${escapeHtml(column?.name || nodeId)}</h3>
+            </div>
+            <div class="flex gap-2 flex-wrap">
+                <span class="text-xs px-2 py-1 rounded" style="background: rgba(59,130,246,0.12); color: #2563eb;">${nodeType}</span>
+                ${column?.type ? `<span class="text-xs px-2 py-1 rounded" style="background: rgba(16,185,129,0.12); color: #10b981;">${column.type}</span>` : ''}
+            </div>
+        </div>
+    `;
+
+    // Statistics section
+    if (statistics) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-chart-bar mr-2" style="color: var(--accent);"></i>Statistics
+                </h4>
+                <div class="grid grid-cols-2 gap-3 text-sm">
+                    ${statistics.count !== undefined ? `<div><span style="color: var(--text-secondary);">Count:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.count.toLocaleString()}</span></div>` : ''}
+                    ${statistics.unique_count !== undefined ? `<div><span style="color: var(--text-secondary);">Unique:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.unique_count.toLocaleString()}</span></div>` : ''}
+                    ${statistics.null_count !== undefined ? `<div><span style="color: var(--text-secondary);">Null:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.null_count.toLocaleString()}</span></div>` : ''}
+                    ${statistics.mean !== undefined ? `<div><span style="color: var(--text-secondary);">Mean:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.mean.toFixed(2)}</span></div>` : ''}
+                    ${statistics.median !== undefined ? `<div><span style="color: var(--text-secondary);">Median:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.median.toFixed(2)}</span></div>` : ''}
+                    ${statistics.stdDev !== undefined ? `<div><span style="color: var(--text-secondary);">Std Dev:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.stdDev.toFixed(2)}</span></div>` : ''}
+                    ${statistics.min !== undefined ? `<div><span style="color: var(--text-secondary);">Min:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.min}</span></div>` : ''}
+                    ${statistics.max !== undefined ? `<div><span style="color: var(--text-secondary);">Max:</span> <span style="color: var(--text-primary); font-weight: bold;">${statistics.max}</span></div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    // Topic info section
+    if (topicInfo) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-tags mr-2" style="color: var(--accent);"></i>Topic Analysis
+                </h4>
+                <p class="text-xs mb-2" style="color: var(--text-secondary);">
+                    ${topicInfo.document_count.toLocaleString()} documents • Avg length: ${topicInfo.average_length} chars
+                </p>
+                <div class="flex flex-wrap gap-2 mb-3">
+                    ${topicInfo.keywords.slice(0, 8).map(kw =>
+                        `<span class="text-xs px-2 py-1 rounded" style="background: rgba(249,115,22,0.12); color: #f97316;">${escapeHtml(kw.term)}</span>`
+                    ).join('')}
+                </div>
+                ${topicInfo.samples && topicInfo.samples.length > 0 ? `
+                    <div class="mt-3">
+                        <p class="text-xs font-semibold mb-2" style="color: var(--text-secondary);">Sample excerpts:</p>
+                        <ul class="space-y-1 text-xs" style="color: var(--text-secondary);">
+                            ${topicInfo.samples.map(s =>
+                                `<li class="border-l-2 pl-2" style="border-color: rgba(148,163,184,0.4);">${escapeHtml(s.excerpt.length > 100 ? s.excerpt.slice(0, 97) + '...' : s.excerpt)}</li>`
+                            ).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    // Connections section
+    if (connections && connections.length > 0) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-project-diagram mr-2" style="color: var(--accent);"></i>Connections (${connections.length})
+                </h4>
+                <div class="space-y-2">
+                    ${connections.slice(0, 10).map(conn => `
+                        <div class="flex items-center justify-between p-2 rounded neu-card-inset">
+                            <span class="text-sm" style="color: var(--text-primary);">${escapeHtml(conn.target.replace('col_', ''))}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs px-2 py-1 rounded" style="background: rgba(139,92,246,0.12); color: #8b5cf6;">${conn.type}</span>
+                                <span class="text-xs" style="color: var(--text-secondary);">${conn.strength.toFixed(2)}</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                    ${connections.length > 10 ? `<p class="text-xs text-center mt-2" style="color: var(--text-secondary);">+ ${connections.length - 10} more</p>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    // Analyses section
+    if (analyses && analyses.length > 0) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-lightbulb mr-2" style="color: var(--accent);"></i>Insights (${analyses.length})
+                </h4>
+                <div class="space-y-2">
+                    ${analyses.slice(0, 5).map(analysis => `
+                        <div class="p-3 rounded neu-card-inset">
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-xs font-semibold px-2 py-1 rounded" style="background: rgba(59,130,246,0.12); color: #2563eb;">${analysis.analysis_type}</span>
+                                <span class="text-xs" style="color: var(--text-secondary);">Score: ${(analysis.quality_score || 0).toFixed(0)}</span>
+                            </div>
+                            <p class="text-xs mt-2" style="color: var(--text-secondary);">${escapeHtml(analysis.explanation || 'No explanation available')}</p>
+                        </div>
+                    `).join('')}
+                    ${analyses.length > 5 ? `<p class="text-xs text-center mt-2" style="color: var(--text-secondary);">+ ${analyses.length - 5} more insights</p>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    // Visualizations section
+    if (visualizations && visualizations.length > 0) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-chart-line mr-2" style="color: var(--accent);"></i>Visualizations (${visualizations.length})
+                </h4>
+                <div class="space-y-2">
+                    ${visualizations.slice(0, 5).map(viz => `
+                        <div class="p-2 rounded neu-card-inset cursor-pointer hover:opacity-90 transition" onclick="focusVisualization('${escapeHtml(viz.title)}')">
+                            <p class="text-sm font-semibold mb-1" style="color: var(--text-primary);">${escapeHtml(viz.title)}</p>
+                            <p class="text-xs" style="color: var(--text-secondary);">${escapeHtml(viz.explanation || '')}</p>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    // Sample data section
+    if (sampleRows && sampleRows.length > 0) {
+        html += `
+            <div class="neu-card p-4">
+                <h4 class="font-semibold mb-3" style="color: var(--text-primary);">
+                    <i class="fas fa-table mr-2" style="color: var(--accent);"></i>Sample Values
+                </h4>
+                <div class="space-y-1 text-sm">
+                    ${sampleRows.slice(0, 10).map(row => `
+                        <div class="flex items-center justify-between p-2 rounded neu-card-inset">
+                            <span class="text-xs" style="color: var(--text-secondary);">Row ${row.row_number}</span>
+                            <span class="text-xs font-mono" style="color: var(--text-primary);">${escapeHtml(String(row.value).slice(0, 50))}${String(row.value).length > 50 ? '...' : ''}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    container.innerHTML = html;
+}
+
+function getNodeColor(nodeType) {
+    switch (nodeType) {
+        case 'column': return '#3b82f6';
+        case 'topic': return '#14b8a6';
+        case 'topic_cluster': return '#0ea5e9';
+        case 'value': return '#10b981';
+        default: return '#6b7280';
+    }
+}
+
+function closeNodeDetailPanel() {
+    if (currentNodeDetailPanel) {
+        currentNodeDetailPanel.remove();
+        currentNodeDetailPanel = null;
+    }
+}
+
+function focusVisualization(title) {
+    // Switch to insights tab and scroll to visualization
+    switchTab('insights');
+    setTimeout(() => {
+        const searchInput = document.getElementById('insight-search');
+        if (searchInput) {
+            searchInput.value = title.split(':')[0] || title;
+            filterInsights(searchInput.value);
+        }
+    }, 100);
+}
+
+window.closeNodeDetailPanel = closeNodeDetailPanel;
+window.focusVisualization = focusVisualization;

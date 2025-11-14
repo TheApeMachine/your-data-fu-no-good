@@ -31,7 +31,7 @@ upload.post('/', async (c) => {
     }
 
     const filename = file.name;
-    const fileType = filename.endsWith('.csv') ? 'csv' : 
+    const fileType = filename.endsWith('.csv') ? 'csv' :
                      filename.endsWith('.json') ? 'json' : null;
 
     if (!fileType) {
@@ -39,7 +39,7 @@ upload.post('/', async (c) => {
     }
 
     // Check file size (limit to 5MB for performance)
-    if (file.size > 5 * 1024 * 1024) {
+    if (file.size > 1024 * 1024 * 1024) {
       return c.json({ error: 'File too large. Maximum size is 5MB.' }, 400);
     }
 
@@ -64,7 +64,7 @@ upload.post('/', async (c) => {
     }
 
     // Limit row count for MVP (prevents server overload)
-    if (rows.length > 10000) {
+    if (rows.length > 1000000) {
       return c.json({ error: 'Dataset too large. Maximum 10,000 rows supported.' }, 400);
     }
 
@@ -118,13 +118,13 @@ upload.post('/', async (c) => {
     const resolvedDatasetId = Number(datasetId);
 
     // Insert data rows in batches to keep DuckDB writes efficient
-    const statements = rows.map((row, i) => 
+    const statements = rows.map((row, i) =>
       db.prepare(`
         INSERT INTO data_rows (dataset_id, row_number, data, is_cleaned)
         VALUES (?, ?, ?, ?)
       `).bind(resolvedDatasetId, i, JSON.stringify(row), 0)
     );
-    
+
     // Execute in batches of 100
     const batchSize = 100;
     for (let i = 0; i < statements.length; i += batchSize) {
@@ -136,7 +136,7 @@ upload.post('/', async (c) => {
     console.log('Detecting column mappings...');
     const mappings = detectColumnMappings(columns, rows.length);
     console.log(`Detected ${mappings.length} column mappings`);
-    
+
     for (const mapping of mappings) {
       await db.prepare(`
         INSERT INTO column_mappings (dataset_id, id_column, name_column, auto_detected)

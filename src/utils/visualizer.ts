@@ -36,22 +36,90 @@ export async function generateVisualizations(
     mappingsMap.set(m.id_column as string, m.name_column as string);
   });
 
+  // Calculate priority score for each analysis to surface most valuable charts
+  function calculateVisualizationPriority(analysis: Analysis): number {
+    let priority = analysis.quality_score || 50;
+
+    // Boost priority based on analysis type (more valuable insights first)
+    const typeMultipliers: Record<string, number> = {
+      'timeseries': 1.5,    // Time series are very valuable
+      'anomaly': 1.4,        // Anomalies are critical insights
+      'correlation': 1.3,    // Correlations reveal relationships
+      'trend': 1.2,          // Trends show patterns
+      'outlier': 1.1,        // Outliers are important
+      'pattern': 1.05,       // Patterns are useful
+      'statistics': 1.0      // Basic stats are baseline
+    };
+
+    priority *= typeMultipliers[analysis.analysis_type] || 1.0;
+
+    // Boost priority based on confidence
+    if (analysis.confidence) {
+      priority *= (1 + analysis.confidence / 100);
+    }
+
+    // Boost priority for high-impact insights (high importance)
+    if (analysis.importance === 'high' || analysis.importance === 'critical') {
+      priority *= 1.3;
+    } else if (analysis.importance === 'medium') {
+      priority *= 1.1;
+    }
+
+    // Boost priority for analyses with strong signals
+    const result = analysis.result;
+    if (result) {
+      // Strong correlations are more valuable
+      if (result.correlation && Math.abs(result.correlation) > 0.7) {
+        priority *= 1.2;
+      }
+      // Strong trends are more valuable
+      if (result.strength && result.strength > 0.5) {
+        priority *= 1.15;
+      }
+      // Anomalies with significant share are more valuable
+      if (result.share && result.share > 0.05) {
+        priority *= 1.1;
+      }
+      // Time series with seasonality are more valuable
+      if (result.seasonality && result.seasonality !== 'none') {
+        priority *= 1.15;
+      }
+    }
+
+    return priority;
+  }
+
+  // Calculate priorities and sort
+  const analysesWithPriority = analyses.map(analysis => ({
+    analysis,
+    priority: calculateVisualizationPriority(analysis)
+  }));
+
+  // Sort by priority (highest first), then by quality_score, then by confidence
+  analysesWithPriority.sort((a, b) => {
+    if (Math.abs(a.priority - b.priority) > 1) {
+      return b.priority - a.priority;
+    }
+    const qualityDiff = (b.analysis.quality_score || 50) - (a.analysis.quality_score || 50);
+    if (Math.abs(qualityDiff) > 5) {
+      return qualityDiff;
+    }
+    return (b.analysis.confidence || 0) - (a.analysis.confidence || 0);
+  });
+
   let displayOrder = 0;
 
-  // Sort analyses by quality score (highest first)
-  const sortedAnalyses = [...analyses].sort((a, b) => 
-    (b.quality_score || 50) - (a.quality_score || 50)
-  );
-
-  for (const analysis of sortedAnalyses) {
+  for (const { analysis } of analysesWithPriority) {
     // Skip visualizations for low-quality insights (score < 30)
-    if ((analysis.quality_score || 50) < 30) {
+    // But allow high-priority types even if quality is slightly lower
+    const minQuality = ['anomaly', 'timeseries', 'correlation'].includes(analysis.analysis_type) ? 25 : 30;
+    if ((analysis.quality_score || 50) < minQuality) {
       console.log(`Skipping low-quality visualization for ${analysis.column_name} (score: ${analysis.quality_score})`);
       continue;
     }
 
     const viz = await createVisualizationForAnalysis(analysis, rows, mappingsMap);
-    
+
     if (viz) {
       await db.prepare(`
         INSERT INTO visualizations (dataset_id, analysis_id, chart_type, title, config, explanation, display_order)
@@ -76,29 +144,29 @@ function createVisualizationForAnalysis(
   rows: Record<string, any>[],
   mappingsMap: Map<string, string>
 ): { chartType: string, title: string, config: any, explanation: string } | null {
-  
+
   switch (analysis.analysis_type) {
     case 'statistics':
       return createStatisticsChart(analysis, rows, mappingsMap);
-    
+
     case 'correlation':
       return createCorrelationChart(analysis, rows, mappingsMap);
-    
+
     case 'outlier':
       return createOutlierChart(analysis, rows, mappingsMap);
 
     case 'anomaly':
       return createAnomalyChart(analysis, rows, mappingsMap);
-    
+
     case 'pattern':
       return createPatternChart(analysis, rows, mappingsMap);
-    
+
     case 'trend':
       return createTrendChart(analysis, rows, mappingsMap);
-    
+
     case 'timeseries':
       return createTimeSeriesChart(analysis, rows, mappingsMap);
-    
+
     default:
       return null;
   }
@@ -110,7 +178,7 @@ function createStatisticsChart(analysis: Analysis, rows: Record<string, any>[], 
 
   const stats = analysis.result;
   const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
-  
+
   // For numeric columns, show distribution histogram
   if (stats.mean !== undefined) {
     const values = rows.map(r => Number(r[colName])).filter(n => !isNaN(n));
@@ -209,7 +277,7 @@ function createCorrelationChart(analysis: Analysis, rows: Record<string, any>[],
   const result = analysis.result;
   const col1 = result.column1;
   const col2 = result.column2;
-  
+
   if (!col1 || !col2) return null;
 
   const col1Suffix = mappingsMap.has(col1) ? ` (via ${mappingsMap.get(col1)})` : '';
@@ -405,14 +473,14 @@ function createPatternChart(analysis: Analysis, rows: Record<string, any>[], map
   const enrichmentSuffix = mappingsMap.has(colName) ? ` (via ${mappingsMap.get(colName)})` : '';
 
   const topPatterns = analysis.result.topPatterns || [];
-  
+
   if (topPatterns.length === 0) return null;
 
   // Limit to top 8 for readability
   const limited = topPatterns.slice(0, 8);
   const labels = limited.map((item: any) => Array.isArray(item) ? item[0] : item.value);
   const data = limited.map((item: any) => Array.isArray(item) ? item[1] : item.count);
-  
+
   return {
     chartType: 'pie',
     title: `Pattern Distribution: ${colName}${enrichmentSuffix}`,
@@ -464,8 +532,8 @@ function createTrendChart(analysis: Analysis, rows: Record<string, any>[], mappi
   const values = rows.map(r => Number(r[colName])).filter(n => !isNaN(n));
   const trend = analysis.result;
 
-  const color = trend.direction === 'up' 
-    ? 'rgba(16, 185, 129, 0.6)' 
+  const color = trend.direction === 'up'
+    ? 'rgba(16, 185, 129, 0.6)'
     : 'rgba(239, 68, 68, 0.6)';
 
   return {
@@ -542,7 +610,7 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
   const result = analysis.result;
   const dateCol = result.dateColumn;
   const valueCol = result.valueColumn;
-  
+
   if (!dateCol || !valueCol) return null;
 
   const dateColSuffix = mappingsMap.has(dateCol) ? ` (via ${mappingsMap.get(dateCol)})` : '';
@@ -553,56 +621,56 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
     date: Date;
     value: number;
   }
-  
+
   const points: TimePoint[] = [];
-  
+
   for (const row of rows) {
     const dateValue = row[dateCol];
     const numValue = row[valueCol];
-    
+
     if (!dateValue || numValue === null || numValue === undefined) continue;
-    
+
     const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
     const value = Number(numValue);
-    
+
     if (!isNaN(date.getTime()) && !isNaN(value)) {
       points.push({ date, value });
     }
   }
-  
+
   // Sort by date
   points.sort((a, b) => a.date.getTime() - b.date.getTime());
-  
+
   if (points.length === 0) return null;
-  
+
   // Format dates based on granularity
   const formatDate = (date: Date, granularity: string): string => {
     const options: Intl.DateTimeFormatOptions = {};
-    
+
     switch (granularity) {
       case 'hourly':
-        return date.toLocaleString('en-US', { 
-          month: 'short', 
-          day: 'numeric', 
+        return date.toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
           hour: 'numeric',
-          hour12: true 
+          hour12: true
         });
       case 'daily':
-        return date.toLocaleDateString('en-US', { 
-          month: 'short', 
+        return date.toLocaleDateString('en-US', {
+          month: 'short',
           day: 'numeric',
           year: points.length > 365 ? 'numeric' : undefined
         });
       case 'weekly':
-        return date.toLocaleDateString('en-US', { 
-          month: 'short', 
+        return date.toLocaleDateString('en-US', {
+          month: 'short',
           day: 'numeric',
           year: 'numeric'
         });
       case 'monthly':
-        return date.toLocaleDateString('en-US', { 
-          month: 'short', 
-          year: 'numeric' 
+        return date.toLocaleDateString('en-US', {
+          month: 'short',
+          year: 'numeric'
         });
       case 'yearly':
         return date.getFullYear().toString();
@@ -610,14 +678,14 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
         return date.toLocaleDateString();
     }
   };
-  
+
   const labels = points.map(p => formatDate(p.date, result.granularity));
   const data = points.map(p => p.value);
-  
+
   // Determine color based on trend
   let color: string;
   let backgroundColor: string;
-  
+
   if (result.trend && result.trend.direction === 'up') {
     color = 'rgba(16, 185, 129, 1)';        // green
     backgroundColor = 'rgba(16, 185, 129, 0.1)';
@@ -628,7 +696,7 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
     color = 'rgba(59, 130, 246, 1)';        // blue
     backgroundColor = 'rgba(59, 130, 246, 0.1)';
   }
-  
+
   // Build title with key metrics
   const titleParts = [`${valueCol} over Time`];
   if (result.trend && result.trend.strength > 0.3) {
@@ -638,25 +706,25 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
   if (result.seasonality && result.seasonality !== 'none') {
     titleParts.push(`📅 ${result.seasonality}`);
   }
-  
+
   const title = titleParts.join(' | ');
-  
+
   // Build detailed explanation
   const explanationParts: string[] = [];
-  
+
   const firstDate = points[0].date.toLocaleDateString();
   const lastDate = points[points.length - 1].date.toLocaleDateString();
   explanationParts.push(`Time series from ${firstDate} to ${lastDate}${valueColSuffix || dateColSuffix ? ' using human-readable names' : ''}`);
-  
+
   if (result.growthRate !== undefined && Math.abs(result.growthRate) > 5) {
     const change = result.growthRate > 0 ? 'increased' : 'decreased';
     explanationParts.push(`${change} by ${Math.abs(result.growthRate).toFixed(1)}%`);
   }
-  
+
   if (result.seasonality && result.seasonality !== 'none') {
     explanationParts.push(`shows ${result.seasonality} patterns`);
   }
-  
+
   return {
     chartType: 'line',
     title: `${title}${valueColSuffix}`,
@@ -688,8 +756,8 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
           intersect: false
         },
         plugins: {
-          legend: { 
-            display: false 
+          legend: {
+            display: false
           },
           title: {
             display: true,
@@ -713,9 +781,9 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
         },
         scales: {
           x: {
-            title: { 
-              display: true, 
-              text: dateCol 
+            title: {
+              display: true,
+              text: dateCol
             },
             ticks: {
               maxRotation: 45,
@@ -725,9 +793,9 @@ function createTimeSeriesChart(analysis: Analysis, rows: Record<string, any>[], 
             }
           },
           y: {
-            title: { 
-              display: true, 
-              text: valueCol 
+            title: {
+              display: true,
+              text: valueCol
             },
             beginAtZero: false,
             ticks: {

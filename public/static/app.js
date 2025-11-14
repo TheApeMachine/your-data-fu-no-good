@@ -8,6 +8,7 @@ const VIZ_PAGE_SIZE = 24; // Number of charts to render per page
 const visualizationConfigStore = new Map(); // canvasId -> chart config
 let vizObserver = null; // IntersectionObserver for lazy rendering
 let bookmarkedInsights = new Set(); // Store bookmarked insight IDs
+let insightFeedback = new Map(); // Store feedback state: analysisId -> { thumbs_up: boolean, thumbs_down: boolean }
 let searchDebounceTimer = null; // Debounce timer for search
 let currentSessionId = null;
 let currentSessionSummary = null;
@@ -421,7 +422,7 @@ function observeVisualization(canvasId) {
     }
 }
 
-// Display visualizations incrementally with pagination and lazy rendering
+// Display visualizations grouped by type with collapsible sections
 function displayVisualizations(visualizations) {
     const container = document.getElementById('visualizations-container');
 
@@ -435,82 +436,174 @@ function displayVisualizations(visualizations) {
         return;
     }
 
-    // If too many charts, auto-collapse the Visual Insights section to surface Key Insights
-    try {
-        if (visualizations.length > 200) {
-            const details = container.closest('details');
-            if (details) details.removeAttribute('open');
-        }
-    } catch { }
-
-    // Reset state
+    // Reset state and ensure container uses vertical layout
     container.innerHTML = '';
+    container.className = 'w-full flex flex-col gap-0'; // Vertical stacking with no gap (sections handle their own spacing)
     currentVizPage = 1;
     visualizationConfigStore.clear();
 
-    // Helper to render a page slice
-    function renderNextPage() {
-        const alreadyRendered = container.querySelectorAll('canvas[id^="chart-"]').length;
-        const start = alreadyRendered;
-        const end = Math.min(visualizations.length, currentVizPage * VIZ_PAGE_SIZE);
+    // Group visualizations by chart_type
+    const groupedViz = {};
+    const typeOrder = ['line', 'scatter', 'bar', 'pie']; // Priority order for chart types
+    const typeLabels = {
+        'line': 'Time Series & Trends',
+        'scatter': 'Correlations & Outliers',
+        'bar': 'Distributions & Comparisons',
+        'pie': 'Patterns & Breakdowns'
+    };
+    const typeIcons = {
+        'line': 'fa-chart-line',
+        'scatter': 'fa-chart-scatter',
+        'bar': 'fa-chart-bar',
+        'pie': 'fa-chart-pie'
+    };
 
-        for (let index = start; index < end; index++) {
-            const viz = visualizations[index];
-            const canvasId = `chart-${index}`;
-            const cardDiv = document.createElement('div');
-            cardDiv.className = 'neu-card p-4 relative';
-            cardDiv.innerHTML = `
-                <div class="mb-3 flex justify-between items-start">
-                    <div class="flex-1">
-                        <h3 class="font-semibold" style="color: var(--text-primary);">${viz.title}</h3>
-                        <p class="text-sm mt-1" style="color: var(--text-secondary);">${viz.explanation}</p>
+    visualizations.forEach((viz, index) => {
+        const chartType = viz.chart_type || 'bar';
+        if (!groupedViz[chartType]) {
+            groupedViz[chartType] = [];
+        }
+        groupedViz[chartType].push({ ...viz, originalIndex: index });
+    });
+
+    // Sort groups by priority (typeOrder), then by count (most first for important types)
+    const sortedGroups = Object.entries(groupedViz).sort((a, b) => {
+        const aOrder = typeOrder.indexOf(a[0]) !== -1 ? typeOrder.indexOf(a[0]) : 999;
+        const bOrder = typeOrder.indexOf(b[0]) !== -1 ? typeOrder.indexOf(b[0]) : 999;
+        if (aOrder !== bOrder) return aOrder - bOrder;
+        // For same priority, show larger groups first
+        return b[1].length - a[1].length;
+    });
+
+    // Track global chart index for unique IDs
+    let globalChartIndex = 0;
+    const sectionPages = {}; // Track pagination per section
+
+    sortedGroups.forEach(([chartType, vizList], groupIndex) => {
+        const sectionId = `viz-section-${chartType}`;
+        const sectionDiv = document.createElement('div');
+        // Add more spacing between sections, with extra space after first section
+        const spacing = groupIndex === 0 ? 'mt-0 mb-10' : 'mb-10';
+        sectionDiv.className = `w-full ${spacing}`;
+        sectionDiv.id = sectionId;
+
+        const label = typeLabels[chartType] || chartType.charAt(0).toUpperCase() + chartType.slice(1);
+        const icon = typeIcons[chartType] || 'fa-chart-bar';
+        const count = vizList.length;
+
+        // Create collapsible section header
+        const headerId = `${sectionId}-header`;
+        sectionDiv.innerHTML = `
+            <details class="neu-card" ${count <= 20 ? 'open' : ''}>
+                <summary class="p-5 cursor-pointer flex items-center justify-between hover:opacity-90 transition-all" style="list-style: none; border-bottom: 2px solid var(--bg-secondary);">
+                    <div class="flex items-center gap-4">
+                        <i class="fas ${icon} text-2xl" style="color: var(--accent);"></i>
+                        <div>
+                            <h3 class="font-bold text-xl m-0" style="color: var(--text-primary);">${label}</h3>
+                            <p class="text-xs mt-1 m-0" style="color: var(--text-secondary);">${count} visualization${count !== 1 ? 's' : ''}</p>
+                        </div>
+                        <span class="text-sm font-semibold px-3 py-1 rounded-full neu-card-inset" style="color: var(--accent); background: rgba(var(--accent-rgb), 0.1);">${count}</span>
                     </div>
-                    <div class="flex gap-2">
-                        <button onclick="drillDownChart('${viz.title.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.explanation.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.column_name || ''}', '${viz.type || ''}')"
-                                class="neu-button p-2" title="Drill down for deeper analysis" style="color: var(--accent);">
-                            <i class="fas fa-search-plus"></i>
-                        </button>
-                        <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')"
-                                class="neu-button p-2" title="Download as PNG">
-                            <i class="fas fa-download"></i>
-                        </button>
+                    <i class="fas fa-chevron-down transition-transform duration-200" style="color: var(--text-secondary); font-size: 1.2rem;"></i>
+                </summary>
+                <div class="p-5 pt-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6" id="${sectionId}-content">
                     </div>
                 </div>
-                <div style="position: relative; height: 300px;">
-                    <canvas id="${canvasId}"></canvas>
-                </div>
-            `;
-            container.appendChild(cardDiv);
+            </details>
+        `;
 
-            // Store config and observe for lazy rendering
-            visualizationConfigStore.set(canvasId, viz.config);
-            // Defer observer registration to next frame to ensure canvas is in DOM
-            requestAnimationFrame(() => observeVisualization(canvasId));
+        container.appendChild(sectionDiv);
+
+        const sectionContent = sectionDiv.querySelector(`#${sectionId}-content`);
+        sectionPages[chartType] = 1;
+        const VIZ_PER_PAGE = 20; // Charts per section per page
+
+        // Render function for this section
+        function renderSectionPage(chartType) {
+            const start = (sectionPages[chartType] - 1) * VIZ_PER_PAGE;
+            const end = Math.min(vizList.length, sectionPages[chartType] * VIZ_PER_PAGE);
+
+            // Clear existing content if resetting
+            if (sectionPages[chartType] === 1) {
+                sectionContent.innerHTML = '';
+            }
+
+            for (let i = start; i < end; i++) {
+                const viz = vizList[i];
+                const canvasId = `chart-${globalChartIndex++}`;
+                const cardDiv = document.createElement('div');
+                cardDiv.className = 'neu-card p-4 relative';
+                cardDiv.innerHTML = `
+                    <div class="mb-3 flex justify-between items-start">
+                        <div class="flex-1">
+                            <h3 class="font-semibold" style="color: var(--text-primary);">${viz.title}</h3>
+                            <p class="text-sm mt-1" style="color: var(--text-secondary);">${viz.explanation}</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="drillDownChart('${viz.title.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.explanation.replace(/'/g, "\\'").replace(/\"/g, '&quot;')}', '${viz.column_name || ''}', '${viz.chart_type || ''}')"
+                                    class="neu-button p-2" title="Drill down for deeper analysis" style="color: var(--accent);">
+                                <i class="fas fa-search-plus"></i>
+                            </button>
+                            <button onclick="downloadChart('${canvasId}', '${viz.title.replace(/'/g, "\\'")}')"
+                                    class="neu-button p-2" title="Download as PNG">
+                                <i class="fas fa-download"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="position: relative; height: 300px;">
+                        <canvas id="${canvasId}"></canvas>
+                    </div>
+                `;
+                sectionContent.appendChild(cardDiv);
+
+                // Store config and observe for lazy rendering
+                visualizationConfigStore.set(canvasId, viz.config);
+                requestAnimationFrame(() => observeVisualization(canvasId));
+            }
+
+            // Add "Load More" button if there are more charts
+            const existingLoadMore = sectionContent.querySelector(`#load-more-${chartType}`);
+            if (existingLoadMore) existingLoadMore.remove();
+
+            if (end < vizList.length) {
+                const loadMoreDiv = document.createElement('div');
+                loadMoreDiv.className = 'col-span-2 flex justify-center items-center mt-2';
+                loadMoreDiv.id = `load-more-${chartType}`;
+                loadMoreDiv.innerHTML = `
+                    <button class="neu-button px-6 py-3">
+                        <i class="fas fa-plus mr-2"></i>Load more ${label} (${vizList.length - end} more)
+                    </button>
+                `;
+                sectionContent.appendChild(loadMoreDiv);
+                const btn = loadMoreDiv.querySelector('button');
+                btn.addEventListener('click', () => {
+                    sectionPages[chartType] += 1;
+                    renderSectionPage(chartType);
+                });
+            }
         }
 
-        // Render/refresh the Load More control
-        const existingLoadMore = document.getElementById('viz-load-more');
-        if (existingLoadMore) existingLoadMore.remove();
+        // Initial render for this section
+        renderSectionPage(chartType);
 
-        if (end < visualizations.length) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'col-span-2 flex justify-center items-center';
-            wrapper.innerHTML = `
-                <button id="viz-load-more" class="neu-button px-6 py-3 mt-2">
-                    <i class="fas fa-plus mr-2"></i>Load more (${visualizations.length - end} more)
-                </button>
-            `;
-            container.appendChild(wrapper);
-            const btn = wrapper.querySelector('#viz-load-more');
-            btn.addEventListener('click', () => {
-                currentVizPage += 1;
-                renderNextPage();
+        // Add chevron rotation animation
+        const details = sectionDiv.querySelector('details');
+        const chevron = sectionDiv.querySelector('.fa-chevron-down');
+        if (details && chevron) {
+            details.addEventListener('toggle', () => {
+                if (details.open) {
+                    chevron.style.transform = 'rotate(180deg)';
+                } else {
+                    chevron.style.transform = 'rotate(0deg)';
+                }
             });
+            // Set initial state
+            if (details.open) {
+                chevron.style.transform = 'rotate(180deg)';
+            }
         }
-    }
-
-    // Initial page
-    renderNextPage();
+    });
 }
 
 // Download chart as PNG
@@ -687,6 +780,66 @@ function showBookmarked() {
     }
 }
 
+// Toggle insight feedback (thumbs up/down)
+async function toggleInsightFeedback(analysisId, feedbackType) {
+    try {
+        const currentFeedback = insightFeedback.get(analysisId) || {};
+        const isCurrentlyActive = currentFeedback[feedbackType];
+
+        if (isCurrentlyActive) {
+            // Remove feedback
+            await axios.delete(`/api/datasets/analyses/${analysisId}/feedback/${feedbackType}`);
+            currentFeedback[feedbackType] = false;
+        } else {
+            // Add feedback (remove opposite if exists)
+            const oppositeType = feedbackType === 'thumbs_up' ? 'thumbs_down' : 'thumbs_up';
+            if (currentFeedback[oppositeType]) {
+                await axios.delete(`/api/datasets/analyses/${analysisId}/feedback/${oppositeType}`);
+                currentFeedback[oppositeType] = false;
+            }
+
+            await axios.post(`/api/datasets/analyses/${analysisId}/feedback`, {
+                feedback_type: feedbackType
+            });
+            currentFeedback[feedbackType] = true;
+        }
+
+        insightFeedback.set(analysisId, currentFeedback);
+
+        // Update UI
+        const upButton = document.getElementById(`thumbs-up-${analysisId}`);
+        const downButton = document.getElementById(`thumbs-down-${analysisId}`);
+
+        if (upButton) {
+            const icon = upButton.querySelector('i');
+            if (icon) {
+                icon.style.color = currentFeedback.thumbs_up ? '#10b981' : 'var(--text-secondary)';
+            }
+            upButton.classList.toggle('active', currentFeedback.thumbs_up);
+        }
+
+        if (downButton) {
+            const icon = downButton.querySelector('i');
+            if (icon) {
+                icon.style.color = currentFeedback.thumbs_down ? '#ef4444' : 'var(--text-secondary)';
+            }
+            downButton.classList.toggle('active', currentFeedback.thumbs_down);
+        }
+
+        // Reload insights to get updated counts and reordering
+        if (currentDatasetId) {
+            const response = await axios.get(`/api/datasets/${currentDatasetId}/analyses`);
+            allAnalyses = response.data.analyses;
+            displayInsights(allAnalyses);
+        }
+    } catch (error) {
+        console.error('Failed to toggle feedback:', error);
+        alert('Failed to record feedback. Please try again.');
+    }
+}
+
+window.toggleInsightFeedback = toggleInsightFeedback;
+
 // Display insights
 function displayInsights(analyses) {
     const container = document.getElementById('insights-container');
@@ -720,6 +873,24 @@ function displayInsights(analyses) {
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-1">
+                        <button onclick="toggleInsightFeedback(${analysis.id}, 'thumbs_up')"
+                                class="neu-button p-2 ${insightFeedback.get(analysis.id)?.thumbs_up ? 'active' : ''}"
+                                title="This insight is helpful"
+                                id="thumbs-up-${analysis.id}">
+                            <i class="fas fa-thumbs-up" style="color: ${insightFeedback.get(analysis.id)?.thumbs_up ? '#10b981' : 'var(--text-secondary)'};"></i>
+                        </button>
+                        ${analysis.thumbs_up_count > 0 ? `<span class="text-xs" style="color: var(--text-secondary);">${analysis.thumbs_up_count}</span>` : ''}
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <button onclick="toggleInsightFeedback(${analysis.id}, 'thumbs_down')"
+                                class="neu-button p-2 ${insightFeedback.get(analysis.id)?.thumbs_down ? 'active' : ''}"
+                                title="This insight is not helpful"
+                                id="thumbs-down-${analysis.id}">
+                            <i class="fas fa-thumbs-down" style="color: ${insightFeedback.get(analysis.id)?.thumbs_down ? '#ef4444' : 'var(--text-secondary)'};"></i>
+                        </button>
+                        ${analysis.thumbs_down_count > 0 ? `<span class="text-xs" style="color: var(--text-secondary);">${analysis.thumbs_down_count}</span>` : ''}
+                    </div>
                     <button onclick="toggleBookmark(${analysis.id})" class="neu-button p-2" title="Bookmark">
                         <i id="bookmark-icon-${analysis.id}" class="${bookmarkedInsights.has(analysis.id) ? 'fas' : 'far'} fa-star"
                            style="color: ${bookmarkedInsights.has(analysis.id) ? '#f59e0b' : ''}"></i>
