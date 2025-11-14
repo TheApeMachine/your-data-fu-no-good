@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { Bindings } from '../types';
 import { resolveDatabase } from '../storage';
+import { generateStoryboard, exportStoryboardAsMarkdown } from '../utils/storyboard-generator';
 
 function safeParseJson(value: unknown): unknown {
   if (value && typeof value === 'object') {
@@ -453,6 +454,57 @@ datasets.delete('/:id', async (c) => {
   } catch (error) {
     console.error('Failed to delete dataset:', error);
     return c.json({ error: 'Failed to delete dataset' }, 500);
+  }
+});
+
+// Generate storyboard for dataset
+datasets.get('/:id/storyboard', async (c) => {
+  try {
+    const db = resolveDatabase(c.env);
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id)) {
+      return c.json({ error: 'Invalid dataset ID' }, 400);
+    }
+
+    const storyboard = await generateStoryboard(db, id);
+
+    if (!storyboard) {
+      return c.json({ error: 'Failed to generate storyboard - dataset not found or no analyses available' }, 404);
+    }
+
+    return c.json(storyboard);
+  } catch (error) {
+    console.error('Failed to generate storyboard:', error);
+    return c.json({ error: 'Failed to generate storyboard' }, 500);
+  }
+});
+
+// Export storyboard as markdown
+datasets.get('/:id/storyboard/markdown', async (c) => {
+  try {
+    const db = resolveDatabase(c.env);
+    const id = parseInt(c.req.param('id'), 10);
+
+    if (isNaN(id)) {
+      return c.json({ error: 'Invalid dataset ID' }, 400);
+    }
+
+    const storyboard = await generateStoryboard(db, id);
+
+    if (!storyboard) {
+      return c.json({ error: 'Failed to generate storyboard - dataset not found or no analyses available' }, 404);
+    }
+
+    const markdown = exportStoryboardAsMarkdown(storyboard);
+
+    return c.text(markdown, 200, {
+      'Content-Type': 'text/markdown',
+      'Content-Disposition': `attachment; filename="storyboard-${storyboard.datasetName}-${Date.now()}.md"`
+    });
+  } catch (error) {
+    console.error('Failed to export storyboard:', error);
+    return c.json({ error: 'Failed to export storyboard' }, 500);
   }
 });
 

@@ -2,8 +2,48 @@
 import { calculateStats, detectOutliers, detectRobustAnomalies, calculateCorrelation, calculateSpearmanCorrelation, calculateMutualInformationMetrics, detectTrend, analyzeTimeSeries, } from './statistics';
 import { scoreInsightQuality } from './quality-scorer';
 import { deriveFeatureSuggestions } from './feature-engineer';
-import { describeAnomalies, describeCorrelation, describeFeatureSuggestion, describeMissingData, describeOutliers, describePattern, describeStatistics, describeTimeSeriesInsight, describeTrend, } from './insight-writer';
+import { describeAnomalies, describeCorrelation, describeFeatureSuggestion, describeMissingData, describeOutliers, describePattern, describeStatistics, describeTimeSeriesInsight, describeTrend, describeClustering, describePCA, } from './insight-writer';
+import { recordForensicEvent } from './forensics';
+import { findOptimalClusters } from './cluster-analysis';
+import { performPCA, assessPCASuitability } from './dimensionality-reduction';
 const MAX_CORRELATION_SAMPLE = 1500;
+function classifyMissingSeverity(percentage) {
+    if (percentage >= 50)
+        return 'critical';
+    if (percentage >= 30)
+        return 'high';
+    if (percentage >= 15)
+        return 'medium';
+    if (percentage >= 5)
+        return 'low';
+    return 'info';
+}
+function classifyOutlierSeverity(ratio) {
+    if (ratio >= 0.4)
+        return 'high';
+    if (ratio >= 0.2)
+        return 'medium';
+    if (ratio >= 0.1)
+        return 'low';
+    return 'info';
+}
+function classifyTrendSeverity(strength) {
+    if (strength >= 0.75)
+        return 'high';
+    if (strength >= 0.45)
+        return 'medium';
+    if (strength >= 0.2)
+        return 'low';
+    return 'info';
+}
+async function logForensicEvent(db, input) {
+    try {
+        await recordForensicEvent(db, input);
+    }
+    catch (error) {
+        console.error('Failed to store forensic event:', error, input.eventType);
+    }
+}
 export async function analyzeDataset(datasetId, rows, columns, db) {
     console.log(`Starting analysis for dataset ${datasetId}`);
     // 1. Statistical analysis for each column
@@ -51,6 +91,21 @@ export async function analyzeDataset(datasetId, rows, columns, db) {
         INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(datasetId, 'missing', col.name, JSON.stringify(missingPayload), 1.0, missingDescription.text, missingImportance, missingQuality.score).run();
+            const missingSeverity = classifyMissingSeverity(missingPercentage);
+            if (missingSeverity !== 'info') {
+                await logForensicEvent(db, {
+                    datasetId,
+                    eventType: 'missing_spike',
+                    severity: missingSeverity,
+                    summary: `${missingPercentage.toFixed(1)}% missing values detected in ${col.name}`,
+                    details: {
+                        column: col.name,
+                        missingCount: stats.nullCount,
+                        totalCount: stats.count,
+                        missingPercentage,
+                    },
+                });
+            }
         }
         // 2. Outlier detection for numeric columns
         if (col.type === 'number') {
@@ -74,6 +129,22 @@ export async function analyzeDataset(datasetId, rows, columns, db) {
           INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).bind(datasetId, 'outlier', col.name, JSON.stringify(outlierPayload), 0.85, outlierDescription.text, outlierPercentage > 5 ? 'high' : 'medium', outlierQuality.score).run();
+                const outlierRatio = numbers.length > 0 ? outliers.indices.length / numbers.length : 0;
+                const outlierSeverity = classifyOutlierSeverity(outlierRatio);
+                if (outlierSeverity !== 'info') {
+                    await logForensicEvent(db, {
+                        datasetId,
+                        eventType: 'outlier_cluster',
+                        severity: outlierSeverity,
+                        summary: `${outliers.indices.length} potential outliers identified in ${col.name}`,
+                        details: {
+                            column: col.name,
+                            outlierCount: outliers.indices.length,
+                            ratio: outlierRatio,
+                            sampleValues: outlierResult.values,
+                        },
+                    });
+                }
             }
             // 3. Trend detection for numeric columns
             if (numbers.length > 5) {
@@ -89,6 +160,20 @@ export async function analyzeDataset(datasetId, rows, columns, db) {
             INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           `).bind(datasetId, 'trend', col.name, JSON.stringify(trendPayload), trend.strength, trendDescription.text, trend.strength > 0.5 ? 'high' : 'medium', trendQuality.score).run();
+                    const trendSeverity = classifyTrendSeverity(trend.strength);
+                    if (trendSeverity !== 'info') {
+                        await logForensicEvent(db, {
+                            datasetId,
+                            eventType: 'trend_shift',
+                            severity: trendSeverity,
+                            summary: `Detected ${trend.direction} trend in ${col.name}`,
+                            details: {
+                                column: col.name,
+                                direction: trend.direction,
+                                strength: trend.strength,
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -313,6 +398,90 @@ export async function analyzeDataset(datasetId, rows, columns, db) {
         INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(datasetId, 'feature', suggestion.columns.join(', '), JSON.stringify(featurePayload), suggestion.confidence, featureDescription.text, importance, quality.score).run();
+        }
+    }
+    // 7. Cluster analysis
+    const clusteringResult = findOptimalClusters(rows, columns);
+    if (clusteringResult && clusteringResult.clusters.length > 0) {
+        const clusterDescription = describeClustering(clusteringResult);
+        const clusterPayload = {
+            ...clusteringResult,
+            insight_actions: clusterDescription.actions ?? [],
+        };
+        await db.prepare(`
+      INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(datasetId, 'clustering', clusteringResult.columns.join(', '), JSON.stringify(clusterPayload), clusteringResult.elbowScore, // Confidence based on elbow score
+        clusterDescription.text, 'high', 75 // Default high score for now
+        ).run();
+    }
+    // 8. Principal Component Analysis (PCA) for dimensionality reduction
+    const numericColumns = columns.filter(col => col.type === 'number');
+    if (numericColumns.length >= 3) {
+        // Calculate average correlation strength for suitability assessment
+        let totalCorr = 0;
+        let corrCount = 0;
+        const sampleSize = Math.min(numericColumns.length, 5);
+        for (let i = 0; i < sampleSize; i++) {
+            for (let j = i + 1; j < sampleSize; j++) {
+                const col1 = numericColumns[i];
+                const col2 = numericColumns[j];
+                const vals1 = rows.map(r => Number(r[col1.name])).filter(v => !isNaN(v));
+                const vals2 = rows.map(r => Number(r[col2.name])).filter(v => !isNaN(v));
+                if (vals1.length > 5 && vals2.length > 5) {
+                    const corr = calculateCorrelation(vals1, vals2);
+                    if (corr !== null && !isNaN(corr)) {
+                        totalCorr += Math.abs(corr);
+                        corrCount++;
+                    }
+                }
+            }
+        }
+        const avgCorrelation = corrCount > 0 ? totalCorr / corrCount : 0;
+        const suitability = assessPCASuitability(numericColumns.length, rows.length, avgCorrelation);
+        if (suitability.suitable) {
+            // Prepare numeric data matrix
+            const numericData = [];
+            for (const row of rows) {
+                const numRow = [];
+                let hasAllValues = true;
+                for (const col of numericColumns) {
+                    const val = Number(row[col.name]);
+                    if (isNaN(val)) {
+                        hasAllValues = false;
+                        break;
+                    }
+                    numRow.push(val);
+                }
+                if (hasAllValues) {
+                    numericData.push(numRow);
+                }
+            }
+            // Only perform PCA if we have sufficient complete rows
+            if (numericData.length >= 10) {
+                const featureNames = numericColumns.map(col => col.name);
+                const pcaResult = performPCA(numericData, featureNames, undefined, false);
+                if (pcaResult) {
+                    const pcaDescription = describePCA(pcaResult);
+                    const pcaPayload = {
+                        ...pcaResult,
+                        // Don't store transformed data in DB to save space
+                        transformedData: undefined,
+                        components: pcaResult.components.map(comp => comp.map(val => Number(val.toFixed(6)))),
+                        suitability: suitability.reason,
+                        insight_actions: [],
+                    };
+                    const pcaQuality = scoreInsightQuality('pca', featureNames.join(', '), pcaResult, {
+                        count: numericData.length,
+                        uniqueCount: numericColumns.length,
+                        nullCount: rows.length - numericData.length,
+                    });
+                    await db.prepare(`
+            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(datasetId, 'pca', featureNames.join(', '), JSON.stringify(pcaPayload), suitability.confidence, pcaDescription.text, numericColumns.length >= 10 ? 'high' : 'medium', pcaQuality.score).run();
+                }
+            }
         }
     }
 }

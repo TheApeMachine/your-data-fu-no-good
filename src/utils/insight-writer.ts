@@ -776,3 +776,48 @@ export function describeFeatureSuggestion(suggestion: FeatureSuggestion): Insigh
     actions,
   };
 }
+
+export function describePCA(
+  result: {
+    explainedVariance: number[];
+    cumulativeVariance: number[];
+    recommendedComponents: number;
+    featureNames: string[];
+    loadings: Array<{
+      component: number;
+      features: Array<{ name: string; loading: number; absLoading: number }>;
+    }>;
+  }
+): InsightDescription {
+  const totalFeatures = result.featureNames.length;
+  const recommendedComponents = result.recommendedComponents;
+  const reductionPercent = ((totalFeatures - recommendedComponents) / totalFeatures * 100).toFixed(0);
+  const pc1Variance = result.explainedVariance[0]?.toFixed(1) || 0;
+  const pc2Variance = result.explainedVariance[1]?.toFixed(1) || 0;
+
+  const topFeatures = result.loadings[0]?.features.slice(0, 3).map(f => f.name) || [];
+  const topFeaturesText = topFeatures.length > 0 ? topFeatures.join(', ') : 'various features';
+
+  const narrative: InsightNarrative = {
+    meaning: `Your ${totalFeatures}-dimensional dataset can be effectively reduced to ${recommendedComponents} principal components (${reductionPercent}% dimensionality reduction) while retaining 80% of the original variance.`,
+    impact: `This reveals that much of your data's information is redundant or correlated. The first component alone explains ${pc1Variance}% of total variance and is primarily driven by ${topFeaturesText}.`,
+    action: `Use these ${recommendedComponents} components for modeling, visualization, or feature selection instead of all ${totalFeatures} features. This simplifies analysis, reduces noise, and can improve model performance.`,
+    signal: `First two components explain ${(parseFloat(pc1Variance) + parseFloat(pc2Variance)).toFixed(1)}% of variance combined`,
+  };
+
+  // Build component interpretation
+  const componentInsights: string[] = [];
+  for (let i = 0; i < Math.min(3, result.loadings.length); i++) {
+    const comp = result.loadings[i];
+    const topContributors = comp.features.slice(0, 2).map(f => `${f.name} (${formatSigned(f.loading)})`).join(', ');
+    componentInsights.push(`PC${i + 1}: ${topContributors}`);
+  }
+
+  if (componentInsights.length > 0) {
+    narrative.signal += ` · Key drivers: ${componentInsights.join(' · ')}`;
+  }
+
+  return {
+    text: composeNarrative(narrative),
+  };
+}
