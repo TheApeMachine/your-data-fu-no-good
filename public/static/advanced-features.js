@@ -599,6 +599,1068 @@ function getEvidenceStrengthColor(strength) {
     }
 }
 
+// Generate and display quality scorecard
+async function generateQualityScorecard() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-scorecard-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Analyzing...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/quality-scorecard`);
+        displayQualityScorecard(response.data);
+    } catch (error) {
+        console.error('Failed to generate quality scorecard:', error);
+        alert('Failed to generate quality scorecard. Please try again.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-chart-bar mr-2"></i>Quality Scorecard';
+        }
+    }
+}
+
+// Display quality scorecard in modal
+function displayQualityScorecard(scorecard) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Grade colors
+    const gradeColors = {
+        'A': { bg: 'rgba(34, 197, 94, 0.2)', text: '#16a34a', border: '#16a34a' },
+        'B': { bg: 'rgba(59, 130, 246, 0.2)', text: '#2563eb', border: '#2563eb' },
+        'C': { bg: 'rgba(245, 158, 11, 0.2)', text: '#d97706', border: '#d97706' },
+        'D': { bg: 'rgba(249, 115, 22, 0.2)', text: '#ea580c', border: '#ea580c' },
+        'F': { bg: 'rgba(239, 68, 68, 0.2)', text: '#dc2626', border: '#dc2626' }
+    };
+
+    const healthStatusText = {
+        'excellent': '🎉 Excellent',
+        'good': '✅ Good',
+        'fair': '⚠️ Fair',
+        'poor': '❌ Poor',
+        'critical': '🚨 Critical'
+    };
+
+    const overallGrade = gradeColors[scorecard.overallGrade];
+
+    // Dimension cards
+    const dimensionsHtml = Object.entries(scorecard.dimensions).map(([name, dimension]) => {
+        const gradeStyle = gradeColors[dimension.grade];
+        const issuesHtml = dimension.issues.length > 0 ? `
+            <div class="mt-4 space-y-2">
+                <div class="text-sm font-semibold" style="color: var(--text-primary);">Issues (${dimension.issues.length}):</div>
+                ${dimension.issues.map((issue, index) => {
+                    const severityColors = {
+                        'critical': { bg: 'rgba(239, 68, 68, 0.15)', text: '#dc2626' },
+                        'high': { bg: 'rgba(249, 115, 22, 0.15)', text: '#ea580c' },
+                        'medium': { bg: 'rgba(245, 158, 11, 0.15)', text: '#d97706' },
+                        'low': { bg: 'rgba(59, 130, 246, 0.15)', text: '#2563eb' }
+                    };
+                    const severityStyle = severityColors[issue.severity];
+
+                    return `
+                        <div class="p-3 rounded-lg" style="background: rgba(0, 0, 0, 0.05); border-left: 3px solid ${severityStyle.text};">
+                            <div class="flex items-start justify-between gap-2 mb-2">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                              style="background: ${severityStyle.bg}; color: ${severityStyle.text};">
+                                            ${issue.severity.toUpperCase()}
+                                        </span>
+                                        <span class="text-sm font-semibold" style="color: var(--text-primary);">
+                                            ${issue.description}
+                                        </span>
+                                    </div>
+                                    <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                        <strong>Impact:</strong> ${issue.impact}
+                                    </div>
+                                    <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                        <strong>Recommendation:</strong> ${issue.recommendation}
+                                    </div>
+                                    ${issue.affectedColumns.length > 0 ? `
+                                        <div class="text-xs mt-1" style="color: var(--text-secondary);">
+                                            <strong>Affected:</strong> ${issue.affectedColumns.join(', ')}
+                                        </div>
+                                    ` : ''}
+                                </div>
+                                ${issue.actionable ? getScorecardActionButton(issue, name) : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        ` : `<div class="mt-4 text-sm" style="color: var(--text-secondary);">No issues detected</div>`;
+
+        const strengthsHtml = dimension.strengths.length > 0 ? `
+            <div class="mt-3">
+                <div class="text-sm font-semibold mb-1" style="color: var(--accent);">Strengths:</div>
+                <ul class="text-xs space-y-1" style="color: var(--text-secondary);">
+                    ${dimension.strengths.map(s => `<li>✓ ${s}</li>`).join('')}
+                </ul>
+            </div>
+        ` : '';
+
+        return `
+            <div class="neu-card p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <h4 class="text-lg font-bold" style="color: var(--text-primary);">${dimension.name}</h4>
+                    <div class="flex items-center gap-3">
+                        <span class="text-2xl font-bold" style="color: ${gradeStyle.text};">${dimension.score}</span>
+                        <span class="px-3 py-1 rounded text-lg font-bold"
+                              style="background: ${gradeStyle.bg}; color: ${gradeStyle.text}; border: 2px solid ${gradeStyle.border};">
+                            ${dimension.grade}
+                        </span>
+                    </div>
+                </div>
+                ${strengthsHtml}
+                ${issuesHtml}
+            </div>
+        `;
+    }).join('');
+
+    // Priority recommendations
+    const recommendationsHtml = scorecard.recommendations.length > 0 ? `
+        <div class="neu-card p-6 mt-6">
+            <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                <i class="fas fa-list-ol mr-2" style="color: var(--accent);"></i>Priority Recommendations
+            </h3>
+            <div class="space-y-3">
+                ${scorecard.recommendations.map(rec => {
+                    const effortColors = {
+                        'low': { bg: 'rgba(34, 197, 94, 0.15)', text: '#16a34a' },
+                        'medium': { bg: 'rgba(245, 158, 11, 0.15)', text: '#d97706' },
+                        'high': { bg: 'rgba(239, 68, 68, 0.15)', text: '#dc2626' }
+                    };
+                    const effortStyle = effortColors[rec.effort];
+
+                    return `
+                        <div class="p-4 rounded-lg" style="background: rgba(0, 0, 0, 0.05);">
+                            <div class="flex items-start gap-3">
+                                <span class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-white"
+                                      style="background: var(--accent);">
+                                    ${rec.priority}
+                                </span>
+                                <div class="flex-1">
+                                    <div class="font-semibold mb-1" style="color: var(--text-primary);">${rec.title}</div>
+                                    <div class="text-sm mb-2" style="color: var(--text-secondary);">${rec.description}</div>
+                                    <div class="flex items-center gap-4 text-xs">
+                                        <span style="color: var(--text-secondary);">
+                                            <strong>Expected Improvement:</strong> +${rec.expectedImprovement} points
+                                        </span>
+                                        <span class="px-2 py-0.5 rounded" style="background: ${effortStyle.bg}; color: ${effortStyle.text};">
+                                            ${rec.effort.toUpperCase()} EFFORT
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    ` : '';
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        Data Quality Scorecard
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${scorecard.datasetName} | Generated: ${new Date(scorecard.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeScorecardModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Overall Score -->
+            <div class="neu-card p-6 mb-6" style="background: ${overallGrade.bg}; border: 3px solid ${overallGrade.border};">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-xl font-bold mb-2" style="color: var(--text-primary);">Overall Data Quality</h3>
+                        <div class="text-lg" style="color: var(--text-primary);">
+                            Status: <strong>${healthStatusText[scorecard.healthStatus]}</strong>
+                        </div>
+                        <div class="text-sm mt-2" style="color: var(--text-secondary);">
+                            ${scorecard.summary.totalIssues} issues found
+                            (${scorecard.summary.criticalIssues} critical,
+                            ${scorecard.summary.highIssues} high,
+                            ${scorecard.summary.mediumIssues} medium,
+                            ${scorecard.summary.lowIssues} low) |
+                            ${scorecard.summary.actionableIssues} actionable
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-6xl font-bold mb-2" style="color: ${overallGrade.text};">
+                            ${scorecard.overallScore}
+                        </div>
+                        <div class="px-6 py-2 rounded-lg text-3xl font-bold"
+                             style="background: ${overallGrade.bg}; color: ${overallGrade.text}; border: 3px solid ${overallGrade.border};">
+                            ${scorecard.overallGrade}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dimensions -->
+            <div class="grid grid-cols-1 gap-4 mb-6">
+                ${dimensionsHtml}
+            </div>
+
+            <!-- Recommendations -->
+            ${recommendationsHtml}
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeScorecardModal();
+        }
+    });
+}
+
+// Get action button for scorecard issue
+function getScorecardActionButton(issue, dimension) {
+    const actionType = issue.actionType || 'manual_review';
+
+    const buttons = {
+        'clean_missing': {
+            icon: 'broom',
+            label: 'Clean Data',
+            color: 'var(--accent)'
+        },
+        'remove_duplicates': {
+            icon: 'clone',
+            label: 'Remove Duplicates',
+            color: '#f59e0b'
+        },
+        'fix_outliers': {
+            icon: 'exclamation-triangle',
+            label: 'Fix Outliers',
+            color: '#ef4444'
+        },
+        'validate_range': {
+            icon: 'check-circle',
+            label: 'Validate',
+            color: '#10b981'
+        },
+        'check_consistency': {
+            icon: 'balance-scale',
+            label: 'Check Consistency',
+            color: '#3b82f6'
+        },
+        'standardize_format': {
+            icon: 'align-left',
+            label: 'Standardize',
+            color: '#8b5cf6'
+        }
+    };
+
+    const buttonConfig = buttons[actionType] || { icon: 'tools', label: 'Fix', color: 'var(--accent)' };
+
+    return `
+        <button onclick="executeScorecardAction('${actionType}', ${JSON.stringify(issue.affectedColumns)}, '${dimension}')"
+                class="neu-button px-3 py-1 text-xs flex-shrink-0"
+                style="color: ${buttonConfig.color};">
+            <i class="fas fa-${buttonConfig.icon} mr-1"></i>${buttonConfig.label}
+        </button>
+    `;
+}
+
+// Execute scorecard action
+async function executeScorecardAction(actionType, affectedColumns, dimension) {
+    closeScorecardModal();
+
+    // Small delay for smooth transition
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'clean_missing':
+            // Navigate to data cleaner with focus on affected columns
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Data Cleaning',
+                    `Focus on missing data in: ${affectedColumns.join(', ')}. Use the data cleaner to impute or remove missing values.`
+                );
+            }
+            break;
+
+        case 'remove_duplicates':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = 'duplicate';
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Duplicate Detection',
+                    `Searching for duplicate-related insights. Review the findings and use data cleaning tools to remove duplicates.`
+                );
+            }
+            break;
+
+        case 'fix_outliers':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                // Highlight affected columns in statistics view
+                showActionGuide(
+                    'Outlier Analysis',
+                    `Review outliers in: ${affectedColumns.join(', ')}. Check the statistics and distribution charts to understand outlier patterns.`
+                );
+            }
+            break;
+
+        case 'validate_range':
+            const statisticsTab = document.querySelector('[data-tab="statistics"]');
+            if (statisticsTab) {
+                statisticsTab.click();
+                showActionGuide(
+                    'Range Validation',
+                    `Check value ranges for: ${affectedColumns.join(', ')}. Look at min/max values and consider applying filters or corrections.`
+                );
+            }
+            break;
+
+        case 'check_consistency':
+            const graphTab = document.querySelector('[data-tab="graph"]');
+            if (graphTab) {
+                graphTab.click();
+                showActionGuide(
+                    'Consistency Check',
+                    `Review correlations between: ${affectedColumns.join(', ')}. High correlation may indicate redundant variables. Consider dimensionality reduction (PCA).`
+                );
+            }
+            break;
+
+        case 'standardize_format':
+            const cleanTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanTab) {
+                cleanTab.click();
+                showActionGuide(
+                    'Format Standardization',
+                    `Standardize formats for: ${affectedColumns.join(', ')}. Use data transformation tools to ensure consistent formatting.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Manual Review Required',
+                `Please review the following columns: ${affectedColumns.join(', ')}. This issue may require manual investigation and correction.`
+            );
+    }
+}
+
+// Close scorecard modal
+function closeScorecardModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Data Quality Scorecard')) {
+        modal.remove();
+    }
+}
+
+// Generate and display column recommendations
+async function generateColumnRecommendations() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-recommendations-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Analyzing...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/column-recommendations`);
+        displayColumnRecommendations(response.data);
+    } catch (error) {
+        console.error('Failed to generate column recommendations:', error);
+        alert('Failed to generate column recommendations. Please try again.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-lightbulb mr-2"></i>Column Recommendations';
+        }
+    }
+}
+
+// Display column recommendations in modal
+function displayColumnRecommendations(data) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Priority colors
+    const priorityColors = {
+        'critical': { bg: 'rgba(239, 68, 68, 0.2)', text: '#dc2626', border: '#dc2626' },
+        'high': { bg: 'rgba(249, 115, 22, 0.2)', text: '#ea580c', border: '#ea580c' },
+        'medium': { bg: 'rgba(245, 158, 11, 0.2)', text: '#d97706', border: '#d97706' },
+        'low': { bg: 'rgba(59, 130, 246, 0.2)', text: '#2563eb', border: '#2563eb' }
+    };
+
+    // Category icons and names
+    const categoryInfo = {
+        'key_driver': { icon: 'star', name: 'Key Driver', color: '#f59e0b' },
+        'quality_concern': { icon: 'exclamation-triangle', name: 'Quality Concern', color: '#ef4444' },
+        'high_information': { icon: 'info-circle', name: 'High Information', color: '#3b82f6' },
+        'predictive': { icon: 'chart-line', name: 'Predictive', color: '#8b5cf6' },
+        'anomalous': { icon: 'search', name: 'Anomalous', color: '#ec4899' },
+        'unique_identifier': { icon: 'key', name: 'Unique ID', color: '#64748b' },
+        'explore_further': { icon: 'compass', name: 'Explore Further', color: '#10b981' }
+    };
+
+    // Focus columns section
+    const focusColumnsHtml = data.focusColumns.length > 0 ? `
+        <div class="neu-card p-6 mb-6" style="background: rgba(59, 130, 246, 0.1); border: 2px solid #3b82f6;">
+            <h3 class="text-xl font-bold mb-3" style="color: var(--text-primary);">
+                <i class="fas fa-bullseye mr-2" style="color: #3b82f6;"></i>Focus on These Columns
+            </h3>
+            <p class="text-sm mb-3" style="color: var(--text-secondary);">
+                These ${data.focusColumns.length} columns deserve your immediate attention based on their information content, quality, and predictive power.
+            </p>
+            <div class="flex flex-wrap gap-2">
+                ${data.focusColumns.map(col => `
+                    <span class="px-3 py-1 rounded-full font-semibold" style="background: rgba(59, 130, 246, 0.2); color: #2563eb;">
+                        ${col}
+                    </span>
+                `).join('')}
+            </div>
+        </div>
+    ` : '';
+
+    // Recommendations cards
+    const recommendationsHtml = data.recommendations.map(rec => {
+        const priorityStyle = priorityColors[rec.priority];
+        const catInfo = categoryInfo[rec.category];
+
+        return `
+            <div class="neu-card p-5 mb-4" style="border-left: 4px solid ${catInfo.color};">
+                <div class="flex items-start justify-between gap-3 mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-2xl font-bold" style="color: var(--text-primary);">${rec.columnName}</span>
+                            <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                  style="background: ${priorityStyle.bg}; color: ${priorityStyle.text};">
+                                ${rec.priority.toUpperCase()}
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-2 mb-2">
+                            <i class="fas fa-${catInfo.icon}" style="color: ${catInfo.color};"></i>
+                            <span class="text-sm font-semibold" style="color: ${catInfo.color};">${catInfo.name}</span>
+                            <span class="text-sm" style="color: var(--text-secondary);">•</span>
+                            <span class="text-sm font-bold" style="color: var(--accent);">Score: ${rec.score}/100</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-col items-end gap-1">
+                        <div class="w-16 h-16 rounded-full flex items-center justify-center font-bold text-2xl"
+                             style="background: ${priorityStyle.bg}; color: ${priorityStyle.text}; border: 3px solid ${priorityStyle.border};">
+                            ${rec.score}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Reasoning -->
+                <div class="mb-3 p-3 rounded" style="background: rgba(0, 0, 0, 0.05);">
+                    <p class="text-sm" style="color: var(--text-primary);">${rec.reasoning}</p>
+                </div>
+
+                <!-- Metrics -->
+                <div class="grid grid-cols-5 gap-2 mb-3">
+                    ${Object.entries(rec.metrics).map(([name, value]) => {
+                        const percentage = Math.round(value * 100);
+                        const barColor = percentage >= 70 ? '#10b981' : percentage >= 40 ? '#f59e0b' : '#ef4444';
+                        return `
+                            <div>
+                                <div class="text-xs mb-1" style="color: var(--text-secondary);">
+                                    ${name.replace(/([A-Z])/g, ' $1').trim()}
+                                </div>
+                                <div class="h-2 rounded-full" style="background: rgba(0, 0, 0, 0.1);">
+                                    <div class="h-full rounded-full" style="width: ${percentage}%; background: ${barColor};"></div>
+                                </div>
+                                <div class="text-xs font-semibold mt-0.5" style="color: ${barColor};">${percentage}%</div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+
+                <!-- Insights -->
+                ${rec.insights.length > 0 ? `
+                    <div class="mb-3">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--accent);">Key Insights:</div>
+                        <ul class="text-xs space-y-1" style="color: var(--text-secondary);">
+                            ${rec.insights.map(insight => `<li>• ${insight}</li>`).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+
+                <!-- Actions -->
+                <div class="flex flex-wrap gap-2">
+                    ${rec.actions.map(action => getRecommendationActionButton(action, rec.columnName)).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Summary stats
+    const summaryHtml = `
+        <div class="grid grid-cols-5 gap-3 mb-6">
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-star text-2xl mb-2" style="color: #f59e0b;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.keyDrivers}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Key Drivers</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-exclamation-triangle text-2xl mb-2" style="color: #ef4444;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.qualityConcerns}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Quality Issues</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-info-circle text-2xl mb-2" style="color: #3b82f6;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.highInformation}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">High Info</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-chart-line text-2xl mb-2" style="color: #8b5cf6;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.predictive}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Predictive</div>
+            </div>
+            <div class="neu-card p-4 text-center">
+                <i class="fas fa-search text-2xl mb-2" style="color: #ec4899;"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.anomalous}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Anomalous</div>
+            </div>
+        </div>
+    `;
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        <i class="fas fa-lightbulb mr-2" style="color: var(--accent);"></i>
+                        Column Recommendations
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${data.datasetName} | ${data.totalColumns} columns analyzed | Generated: ${new Date(data.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeRecommendationsModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Summary Stats -->
+            ${summaryHtml}
+
+            <!-- Focus Columns -->
+            ${focusColumnsHtml}
+
+            <!-- Recommendations -->
+            <div class="mb-4">
+                <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                    Detailed Recommendations
+                </h3>
+                ${recommendationsHtml}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeRecommendationsModal();
+        }
+    });
+}
+
+// Get action button for recommendation
+function getRecommendationActionButton(action, columnName) {
+    const actionIcons = {
+        'explore_stats': 'chart-bar',
+        'view_distribution': 'chart-area',
+        'check_correlations': 'project-diagram',
+        'investigate_outliers': 'exclamation-circle',
+        'clean_data': 'broom',
+        'feature_engineering': 'cogs'
+    };
+
+    const actionColors = {
+        'explore_stats': '#3b82f6',
+        'view_distribution': '#10b981',
+        'check_correlations': '#8b5cf6',
+        'investigate_outliers': '#ef4444',
+        'clean_data': '#f59e0b',
+        'feature_engineering': '#ec4899'
+    };
+
+    const icon = actionIcons[action.actionType] || 'hand-pointer';
+    const color = actionColors[action.actionType] || 'var(--accent)';
+
+    return `
+        <button onclick="executeRecommendationAction('${action.actionType}', '${columnName}')"
+                class="neu-button px-3 py-1 text-xs"
+                style="color: ${color};"
+                title="${action.description}">
+            <i class="fas fa-${icon} mr-1"></i>${action.action}
+        </button>
+    `;
+}
+
+// Execute recommendation action
+async function executeRecommendationAction(actionType, columnName) {
+    closeRecommendationsModal();
+
+    // Small delay for smooth transition
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'explore_stats':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                // Try to find and highlight the column in statistics
+                setTimeout(() => {
+                    showActionGuide(
+                        'Column Statistics',
+                        `Reviewing statistics for "${columnName}". Look for mean, median, standard deviation, and distribution shape.`
+                    );
+                }, 300);
+            }
+            break;
+
+        case 'view_distribution':
+            const distributionTab = document.querySelector('[data-tab="statistics"]');
+            if (distributionTab) {
+                distributionTab.click();
+                showActionGuide(
+                    'Distribution Analysis',
+                    `Analyzing distribution for "${columnName}". Check the histogram and box plot for patterns, skewness, and outliers.`
+                );
+            }
+            break;
+
+        case 'check_correlations':
+            const graphTab = document.querySelector('[data-tab="graph"]');
+            if (graphTab) {
+                graphTab.click();
+                showActionGuide(
+                    'Correlation Analysis',
+                    `Exploring correlations for "${columnName}". Look for strong connections in the network graph and correlation matrix.`
+                );
+            }
+            break;
+
+        case 'investigate_outliers':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = columnName;
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Outlier Investigation',
+                    `Searching for outlier insights related to "${columnName}". Review anomaly detection results and statistical outliers.`
+                );
+            }
+            break;
+
+        case 'clean_data':
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Data Cleaning',
+                    `Opening data cleaner for "${columnName}". Use tools to handle missing values, outliers, and formatting issues.`
+                );
+            }
+            break;
+
+        case 'feature_engineering':
+            const featuresTab = document.querySelector('[data-tab="features"]');
+            if (featuresTab) {
+                featuresTab.click();
+                showActionGuide(
+                    'Feature Engineering',
+                    `Exploring feature engineering for "${columnName}". Consider creating derived features like bins, logs, or interactions.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Column Analysis',
+                `Analyzing "${columnName}". Use the various tabs to explore this column's properties and relationships.`
+            );
+    }
+}
+
+// Close recommendations modal
+function closeRecommendationsModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Column Recommendations')) {
+        modal.remove();
+    }
+}
+
+// Generate and display anomaly explanations
+async function generateAnomalyExplanations() {
+    if (!currentDatasetId) return;
+
+    const button = document.getElementById('generate-anomaly-explanations-btn');
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Explaining...';
+    }
+
+    try {
+        const response = await axios.get(`/api/datasets/${currentDatasetId}/anomaly-explanations`);
+        displayAnomalyExplanations(response.data);
+    } catch (error) {
+        console.error('Failed to generate anomaly explanations:', error);
+        alert('Failed to generate anomaly explanations. No anomalies detected or error occurred.');
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = '<i class="fas fa-question-circle mr-2"></i>Explain Anomalies';
+        }
+    }
+}
+
+// Display anomaly explanations in modal
+function displayAnomalyExplanations(data) {
+    const modal = document.createElement('div');
+    modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50';
+    modal.style.overflow = 'auto';
+
+    // Cause type colors and icons
+    const causeStyles = {
+        'data_entry_error': { icon: 'keyboard', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.1)' },
+        'measurement_error': { icon: 'ruler', color: '#f97316', bg: 'rgba(249, 115, 22, 0.1)' },
+        'natural_variation': { icon: 'wave-square', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)' },
+        'systemic_issue': { icon: 'network-wired', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.1)' },
+        'seasonal_pattern': { icon: 'calendar-alt', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.1)' },
+        'data_corruption': { icon: 'bug', color: '#be123c', bg: 'rgba(190, 18, 60, 0.1)' },
+        'edge_case': { icon: 'star', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)' },
+        'legitimate_outlier': { icon: 'check-circle', color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.1)' }
+    };
+
+    // Summary stats
+    const summaryHtml = `
+        <div class="grid grid-cols-4 gap-3 mb-6">
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['data_entry_error'].bg}; border: 2px solid ${causeStyles['data_entry_error'].color};">
+                <i class="fas fa-${causeStyles['data_entry_error'].icon} text-xl mb-2" style="color: ${causeStyles['data_entry_error'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.dataEntryErrors}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Data Entry Errors</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['measurement_error'].bg}; border: 2px solid ${causeStyles['measurement_error'].color};">
+                <i class="fas fa-${causeStyles['measurement_error'].icon} text-xl mb-2" style="color: ${causeStyles['measurement_error'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.measurementErrors}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Measurement Errors</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['natural_variation'].bg}; border: 2px solid ${causeStyles['natural_variation'].color};">
+                <i class="fas fa-${causeStyles['natural_variation'].icon} text-xl mb-2" style="color: ${causeStyles['natural_variation'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.naturalVariation}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Natural Variation</div>
+            </div>
+            <div class="neu-card p-4 text-center" style="background: ${causeStyles['systemic_issue'].bg}; border: 2px solid ${causeStyles['systemic_issue'].color};">
+                <i class="fas fa-${causeStyles['systemic_issue'].icon} text-xl mb-2" style="color: ${causeStyles['systemic_issue'].color};"></i>
+                <div class="text-2xl font-bold" style="color: var(--text-primary);">${data.summary.systemicIssues}</div>
+                <div class="text-xs" style="color: var(--text-secondary);">Systemic Issues</div>
+            </div>
+        </div>
+    `;
+
+    // Explanation cards
+    const explanationsHtml = data.explanations.map(exp => {
+        const causeStyle = causeStyles[exp.primaryCause.type] || causeStyles['legitimate_outlier'];
+        const confidencePercent = Math.round(exp.confidence * 100);
+
+        return `
+            <div class="neu-card p-5 mb-4" style="border-left: 4px solid ${causeStyle.color};">
+                <!-- Header -->
+                <div class="flex items-start justify-between gap-3 mb-3">
+                    <div class="flex-1">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="text-lg font-bold" style="color: var(--text-primary);">
+                                ${exp.columnName}: ${typeof exp.value === 'number' ? exp.value.toFixed(2) : exp.value}
+                            </span>
+                            <span class="px-2 py-0.5 rounded text-xs font-semibold"
+                                  style="background: ${causeStyle.bg}; color: ${causeStyle.color};">
+                                ANOMALY
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--text-secondary);">Confidence</div>
+                        <div class="text-2xl font-bold" style="color: ${causeStyle.color};">${confidencePercent}%</div>
+                    </div>
+                </div>
+
+                <!-- Primary Cause -->
+                <div class="p-4 rounded-lg mb-3" style="background: ${causeStyle.bg}; border: 2px solid ${causeStyle.color};">
+                    <div class="flex items-center gap-2 mb-2">
+                        <i class="fas fa-${causeStyle.icon}" style="color: ${causeStyle.color};"></i>
+                        <span class="font-bold" style="color: var(--text-primary);">${exp.primaryCause.name}</span>
+                        <span class="text-xs px-2 py-0.5 rounded" style="background: ${causeStyle.color}; color: white;">
+                            ${Math.round(exp.primaryCause.probability * 100)}% likely
+                        </span>
+                    </div>
+                    <p class="text-sm mb-3" style="color: var(--text-primary);">${exp.primaryCause.explanation}</p>
+
+                    <!-- Evidence -->
+                    ${exp.primaryCause.evidence.length > 0 ? `
+                        <div class="mt-2">
+                            <div class="text-xs font-semibold mb-1" style="color: var(--text-secondary);">Evidence:</div>
+                            <ul class="text-xs space-y-1">
+                                ${exp.primaryCause.evidence.map(ev => `
+                                    <li class="flex items-start gap-2">
+                                        <span class="px-1.5 py-0.5 rounded text-xs font-semibold"
+                                              style="background: ${ev.strength === 'strong' ? '#16a34a' : ev.strength === 'moderate' ? '#f59e0b' : '#64748b'}; color: white;">
+                                            ${ev.strength.toUpperCase()}
+                                        </span>
+                                        <span style="color: var(--text-secondary);">${ev.description}</span>
+                                    </li>
+                                `).join('')}
+                            </ul>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <!-- Alternative Causes -->
+                ${exp.alternativeCauses.length > 0 ? `
+                    <details class="mb-3">
+                        <summary class="cursor-pointer text-sm font-semibold mb-2" style="color: var(--accent);">
+                            Alternative Explanations (${exp.alternativeCauses.length})
+                        </summary>
+                        <div class="space-y-2 ml-4">
+                            ${exp.alternativeCauses.map(alt => {
+                                const altStyle = causeStyles[alt.type] || causeStyles['legitimate_outlier'];
+                                return `
+                                    <div class="p-2 rounded" style="background: ${altStyle.bg}; border-left: 2px solid ${altStyle.color};">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <i class="fas fa-${altStyle.icon} text-xs" style="color: ${altStyle.color};"></i>
+                                            <span class="text-sm font-semibold" style="color: var(--text-primary);">${alt.name}</span>
+                                            <span class="text-xs" style="color: var(--text-secondary);">(${Math.round(alt.probability * 100)}%)</span>
+                                        </div>
+                                        <p class="text-xs" style="color: var(--text-secondary);">${alt.explanation}</p>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </details>
+                ` : ''}
+
+                <!-- Contextual Factors -->
+                ${exp.contextualFactors.length > 0 ? `
+                    <div class="mb-3">
+                        <div class="text-sm font-semibold mb-1" style="color: var(--text-secondary);">Context:</div>
+                        <div class="flex flex-wrap gap-2">
+                            ${exp.contextualFactors.map(factor => {
+                                const impactColor = factor.impact === 'increases_likelihood' ? '#ef4444' :
+                                                  factor.impact === 'decreases_likelihood' ? '#10b981' : '#64748b';
+                                return `
+                                    <span class="text-xs px-2 py-1 rounded" style="background: rgba(0,0,0,0.05); color: ${impactColor};"
+                                          title="${factor.description}">
+                                        ${factor.factor}
+                                        ${factor.impact === 'increases_likelihood' ? '↑' : factor.impact === 'decreases_likelihood' ? '↓' : '•'}
+                                    </span>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <!-- Actionable Insights -->
+                ${exp.actionableInsights.length > 0 ? `
+                    <div class="p-3 rounded mb-3" style="background: rgba(59, 130, 246, 0.1);">
+                        <div class="text-sm font-semibold mb-1" style="color: #2563eb;">
+                            <i class="fas fa-lightbulb mr-1"></i>Insights:
+                        </div>
+                        <ul class="text-xs space-y-1">
+                            ${exp.actionableInsights.map(insight => `
+                                <li style="color: var(--text-primary);">• ${insight}</li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+
+                <!-- Recommended Actions -->
+                <div class="flex flex-wrap gap-2">
+                    ${exp.recommendedActions.map(action => getExplanationActionButton(action, exp)).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    modal.innerHTML = `
+        <div class="neu-card p-8 max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+            <!-- Header -->
+            <div class="flex items-start justify-between mb-6">
+                <div>
+                    <h2 class="text-3xl font-bold mb-2" style="color: var(--text-primary);">
+                        <i class="fas fa-question-circle mr-2" style="color: var(--accent);"></i>
+                        Anomaly Explanations
+                    </h2>
+                    <p class="text-sm" style="color: var(--text-secondary);">
+                        ${data.datasetName} | ${data.explainedAnomalies} of ${data.totalAnomalies} anomalies explained |
+                        Generated: ${new Date(data.generatedAt).toLocaleString()}
+                    </p>
+                </div>
+                <button onclick="closeExplanationsModal()" class="neu-button px-4 py-2 hover:bg-red-500 hover:text-white">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <!-- Summary -->
+            ${summaryHtml}
+
+            <!-- Explanations -->
+            <div>
+                <h3 class="text-xl font-bold mb-4" style="color: var(--text-primary);">
+                    Detailed Explanations
+                </h3>
+                ${explanationsHtml}
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeExplanationsModal();
+        }
+    });
+}
+
+// Get action button for explanation
+function getExplanationActionButton(action, explanation) {
+    const actionIcons = {
+        'investigate': 'search',
+        'correct': 'edit',
+        'flag': 'flag',
+        'accept': 'check',
+        'review_similar': 'copy'
+    };
+
+    const actionColors = {
+        'investigate': '#3b82f6',
+        'correct': '#ef4444',
+        'flag': '#f59e0b',
+        'accept': '#10b981',
+        'review_similar': '#8b5cf6'
+    };
+
+    const icon = actionIcons[action.actionType] || 'hand-pointer';
+    const color = actionColors[action.actionType] || 'var(--accent)';
+
+    return `
+        <button onclick="executeExplanationAction('${action.actionType}', '${explanation.columnName}', ${explanation.value})"
+                class="neu-button px-3 py-1 text-xs"
+                style="color: ${color};"
+                title="${action.description}">
+            <i class="fas fa-${icon} mr-1"></i>${action.action}
+        </button>
+    `;
+}
+
+// Execute explanation action
+async function executeExplanationAction(actionType, columnName, value) {
+    closeExplanationsModal();
+
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    switch (actionType) {
+        case 'investigate':
+            const insightsTab = document.querySelector('[data-tab="insights"]');
+            if (insightsTab) {
+                insightsTab.click();
+                const searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) {
+                    searchInput.value = columnName;
+                    searchInput.dispatchEvent(new Event('input'));
+                }
+                showActionGuide(
+                    'Investigate Anomaly',
+                    `Searching for insights related to "${columnName}". Review anomaly detection results and statistical patterns.`
+                );
+            }
+            break;
+
+        case 'correct':
+            const cleanerTab = document.querySelector('[data-tab="cleaner"]');
+            if (cleanerTab) {
+                cleanerTab.click();
+                showActionGuide(
+                    'Correct Anomaly',
+                    `Opening data cleaner for "${columnName}". Locate and correct the anomalous value: ${value}.`
+                );
+            }
+            break;
+
+        case 'flag':
+            showActionGuide(
+                'Flag for Review',
+                `Anomaly in "${columnName}" (value: ${value}) flagged for manual review. Consider documenting this for future reference.`
+            );
+            break;
+
+        case 'accept':
+            showActionGuide(
+                'Accept Anomaly',
+                `Anomaly in "${columnName}" (value: ${value}) accepted as legitimate. Consider using robust statistical methods that handle outliers.`
+            );
+            break;
+
+        case 'review_similar':
+            const statsTab = document.querySelector('[data-tab="statistics"]');
+            if (statsTab) {
+                statsTab.click();
+                showActionGuide(
+                    'Review Similar Cases',
+                    `Check statistics for "${columnName}" to find similar anomalous values. Look for patterns in the distribution.`
+                );
+            }
+            break;
+
+        default:
+            showActionGuide(
+                'Anomaly Action',
+                `Perform recommended action for "${columnName}" anomaly (value: ${value}).`
+            );
+    }
+}
+
+// Close explanations modal
+function closeExplanationsModal() {
+    const modal = document.querySelector('.fixed.inset-0');
+    if (modal && modal.innerHTML.includes('Anomaly Explanations')) {
+        modal.remove();
+    }
+}
+
 // Add action buttons to dataset info
 function addAdvancedFeatureButtons() {
     const container = document.getElementById('dataset-info');
@@ -617,6 +1679,15 @@ function addAdvancedFeatureButtons() {
                 <button id="generate-theories-btn" onclick="generateTheories()" class="neu-button px-4 py-2">
                     <i class="fas fa-flask mr-2"></i>Generate Theories
                 </button>
+                <button id="generate-scorecard-btn" onclick="generateQualityScorecard()" class="neu-button px-4 py-2">
+                    <i class="fas fa-chart-bar mr-2"></i>Quality Scorecard
+                </button>
+                <button id="generate-recommendations-btn" onclick="generateColumnRecommendations()" class="neu-button px-4 py-2">
+                    <i class="fas fa-lightbulb mr-2"></i>Column Recommendations
+                </button>
+                <button id="generate-anomaly-explanations-btn" onclick="generateAnomalyExplanations()" class="neu-button px-4 py-2">
+                    <i class="fas fa-question-circle mr-2"></i>Explain Anomalies
+                </button>
             </div>
         </div>
     `;
@@ -627,8 +1698,17 @@ function addAdvancedFeatureButtons() {
 // Make functions globally accessible
 window.generateStoryboard = generateStoryboard;
 window.generateTheories = generateTheories;
+window.generateQualityScorecard = generateQualityScorecard;
+window.generateColumnRecommendations = generateColumnRecommendations;
+window.generateAnomalyExplanations = generateAnomalyExplanations;
 window.closeStoryboardModal = closeStoryboardModal;
 window.closeTheoriesModal = closeTheoriesModal;
+window.closeScorecardModal = closeScorecardModal;
+window.closeRecommendationsModal = closeRecommendationsModal;
+window.closeExplanationsModal = closeExplanationsModal;
 window.downloadStoryboardMarkdown = downloadStoryboardMarkdown;
 window.addAdvancedFeatureButtons = addAdvancedFeatureButtons;
 window.executeTheoryAction = executeTheoryAction;
+window.executeScorecardAction = executeScorecardAction;
+window.executeRecommendationAction = executeRecommendationAction;
+window.executeExplanationAction = executeExplanationAction;
