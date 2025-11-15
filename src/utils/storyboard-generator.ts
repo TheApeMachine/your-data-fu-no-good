@@ -408,6 +408,22 @@ export async function generateStoryboard(
   db: DatabaseBinding,
   datasetId: number
 ): Promise<Storyboard | null> {
+  // Helper to normalize BigInt values
+  const normalizeBigInt = (value: unknown): unknown => {
+    if (typeof value === 'bigint') {
+      const asNumber = Number(value);
+      return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => normalizeBigInt(item));
+    }
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>).map(([key, val]) => [key, normalizeBigInt(val)]);
+      return Object.fromEntries(entries);
+    }
+    return value;
+  };
+
   // Fetch dataset info
   const dataset = await db.prepare('SELECT * FROM datasets WHERE id = ?')
     .bind(datasetId)
@@ -420,10 +436,15 @@ export async function generateStoryboard(
     'SELECT * FROM analyses WHERE dataset_id = ? ORDER BY quality_score DESC, importance DESC, confidence DESC'
   ).bind(datasetId).all<any>();
 
-  const analyses: Analysis[] = analysesResult.results.map(a => ({
-    ...a,
-    result: typeof a.result === 'string' ? JSON.parse(a.result) : a.result
-  }));
+  const analyses: Analysis[] = analysesResult.results.map(a => {
+    const normalized = normalizeBigInt(a) as any;
+    return {
+      ...normalized,
+      id: Number(normalized.id),
+      dataset_id: Number(normalized.dataset_id),
+      result: typeof normalized.result === 'string' ? JSON.parse(normalized.result) : normalizeBigInt(normalized.result)
+    };
+  });
 
   if (analyses.length === 0) return null;
 
@@ -432,7 +453,11 @@ export async function generateStoryboard(
     'SELECT id, chart_type, title, analysis_id FROM visualizations WHERE dataset_id = ?'
   ).bind(datasetId).all<any>();
 
-  const visualizations = vizResult.results;
+  const visualizations = vizResult.results.map(v => ({
+    ...v,
+    id: Number(v.id),
+    analysis_id: v.analysis_id ? Number(v.analysis_id) : null
+  }));
 
   // Group insights by theme
   const themes = groupInsightsByTheme(analyses);
@@ -484,7 +509,8 @@ export async function generateStoryboard(
   const takeaways = generateKeyTakeaways(analyses, actions);
 
   // Generate executive summary
-  const executiveSummary = generateExecutiveSummary(analyses, dataset.name, dataset.row_count);
+  const rowCount = typeof dataset.row_count === 'bigint' ? Number(dataset.row_count) : (dataset.row_count || 0);
+  const executiveSummary = generateExecutiveSummary(analyses, dataset.name, rowCount);
 
   // Calculate overall confidence
   const avgConfidence = analyses.reduce((sum, a) => sum + (a.quality_score || a.confidence * 100), 0) / analyses.length / 100;

@@ -473,7 +473,7 @@ datasets.get('/:id/storyboard', async (c) => {
       return c.json({ error: 'Failed to generate storyboard - dataset not found or no analyses available' }, 404);
     }
 
-    return c.json(storyboard);
+    return c.json(normalizeValue(storyboard));
   } catch (error) {
     console.error('Failed to generate storyboard:', error);
     return c.json({ error: 'Failed to generate storyboard' }, 500);

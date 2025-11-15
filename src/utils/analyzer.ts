@@ -577,18 +577,18 @@ export async function analyzeDataset(
   }
 
   // 8. Principal Component Analysis (PCA) for dimensionality reduction
-  const numericColumns = columns.filter(col => col.type === 'number');
+  const numericColumnsForPCA = columns.filter(col => col.type === 'number');
 
-  if (numericColumns.length >= 3) {
+  if (numericColumnsForPCA.length >= 3) {
     // Calculate average correlation strength for suitability assessment
     let totalCorr = 0;
     let corrCount = 0;
-    const sampleSize = Math.min(numericColumns.length, 5);
+    const sampleSize = Math.min(numericColumnsForPCA.length, 5);
 
     for (let i = 0; i < sampleSize; i++) {
       for (let j = i + 1; j < sampleSize; j++) {
-        const col1 = numericColumns[i];
-        const col2 = numericColumns[j];
+        const col1 = numericColumnsForPCA[i];
+        const col2 = numericColumnsForPCA[j];
         const vals1 = rows.map(r => Number(r[col1.name])).filter(v => !isNaN(v));
         const vals2 = rows.map(r => Number(r[col2.name])).filter(v => !isNaN(v));
 
@@ -603,7 +603,7 @@ export async function analyzeDataset(
     }
 
     const avgCorrelation = corrCount > 0 ? totalCorr / corrCount : 0;
-    const suitability = assessPCASuitability(numericColumns.length, rows.length, avgCorrelation);
+    const suitability = assessPCASuitability(numericColumnsForPCA.length, rows.length, avgCorrelation);
 
     if (suitability.suitable) {
       // Prepare numeric data matrix
@@ -613,7 +613,7 @@ export async function analyzeDataset(
         const numRow: number[] = [];
         let hasAllValues = true;
 
-        for (const col of numericColumns) {
+        for (const col of numericColumnsForPCA) {
           const val = Number(row[col.name]);
           if (isNaN(val)) {
             hasAllValues = false;
@@ -629,7 +629,7 @@ export async function analyzeDataset(
 
       // Only perform PCA if we have sufficient complete rows
       if (numericData.length >= 10) {
-        const featureNames = numericColumns.map(col => col.name);
+        const featureNames = numericColumnsForPCA.map(col => col.name);
         const pcaResult = performPCA(numericData, featureNames, undefined, false);
 
         if (pcaResult) {
@@ -647,7 +647,7 @@ export async function analyzeDataset(
 
           const pcaQuality = scoreInsightQuality('pca', featureNames.join(', '), pcaResult, {
             count: numericData.length,
-            uniqueCount: numericColumns.length,
+            uniqueCount: numericColumnsForPCA.length,
             nullCount: rows.length - numericData.length,
           });
 
@@ -661,7 +661,7 @@ export async function analyzeDataset(
             JSON.stringify(pcaPayload),
             suitability.confidence,
             pcaDescription.text,
-            numericColumns.length >= 10 ? 'high' : 'medium',
+            numericColumnsForPCA.length >= 10 ? 'high' : 'medium',
             pcaQuality.score
           ).run();
         }
