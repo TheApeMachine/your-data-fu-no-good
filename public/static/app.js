@@ -310,6 +310,13 @@ async function loadDatasetResults(datasetId) {
         displayInsights(analyses);
         displaySampleData();
 
+        // Add advanced feature buttons (storyboard, theories)
+        setTimeout(() => {
+            if (typeof addAdvancedFeatureButtons === 'function') {
+                addAdvancedFeatureButtons();
+            }
+        }, 100);
+
         if (typeof loadTopics === 'function') {
             loadTopics(datasetId);
         }
@@ -1200,6 +1207,10 @@ async function handleInsightAction(analysis, action) {
             await applyFeatureSuggestion(analysis, payload);
             break;
         }
+        case 'view_cluster': {
+            previewClusterGroup(analysis, payload);
+            break;
+        }
         default:
             console.warn('Unknown insight action requested:', action);
     }
@@ -1258,6 +1269,129 @@ async function previewInsightSegment(analysis, payload = {}) {
         const message = error.response?.data?.error || error.message || 'Failed to load segment';
         updateStatus('Segment preview failed', message, 0);
     }
+}
+
+function previewClusterGroup(analysis, payload = {}) {
+    const clusters = Array.isArray(analysis?.result?.clusters) ? analysis.result.clusters : [];
+    if (!clusters.length) {
+        updateStatus('Cluster view unavailable', 'This insight does not include clustering details.', 0);
+        return;
+    }
+
+    const requestedId = typeof payload.clusterId === 'number' ? payload.clusterId : Number(payload.clusterId);
+    let cluster = clusters.find((c) => c.id === requestedId);
+    if (!cluster && Number.isInteger(requestedId)) {
+        cluster = clusters[requestedId];
+    }
+    if (!cluster) {
+        cluster = clusters[0];
+    }
+
+    const totalSize = clusters.reduce((sum, c) => sum + (Number(c.size) || 0), 0);
+    const percent = totalSize > 0 ? (Number(cluster.size || 0) / totalSize) * 100 : null;
+    const columns = Array.isArray(payload.columns) && payload.columns.length
+        ? payload.columns
+        : Array.isArray(analysis?.result?.columns) ? analysis.result.columns : [];
+
+    showClusterDetailModal({
+        title: payload.title || `Group ${Number(cluster.id) + 1}`,
+        cluster,
+        columns,
+        totalSize,
+        percent,
+    });
+}
+
+function showClusterDetailModal({ title, cluster, columns = [], totalSize, percent }) {
+    if (activeInsightModal) {
+        activeInsightModal.remove();
+        activeInsightModal = null;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'insight-modal-overlay';
+    overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 2rem; z-index: 2000;';
+
+    const clusterSize = Number(cluster.size) || 0;
+    const percentLabel = percent !== null ? `${percent.toFixed(1)}%` : 'n/a';
+
+    const highSignals = Object.entries(cluster?.profile || {})
+        .filter(([, prof]) => prof?.description === 'high')
+        .map(([name]) => name);
+    const lowSignals = Object.entries(cluster?.profile || {})
+        .filter(([, prof]) => prof?.description === 'low')
+        .map(([name]) => name);
+
+    const centroidKeys = Object.keys(cluster?.centroid || {});
+    const preferredColumns = columns.length ? columns : centroidKeys;
+    const limitedColumns = preferredColumns.filter((name) => centroidKeys.includes(name)).slice(0, 8);
+    const tableColumns = limitedColumns.length ? limitedColumns : centroidKeys.slice(0, 8);
+
+    const columnRows = tableColumns.map((name) => {
+        const centroidValue = cluster?.centroid ? cluster.centroid[name] : undefined;
+        const profile = cluster?.profile ? cluster.profile[name] : undefined;
+        const description = profile?.description ? profile.description : 'average';
+        const range = profile && profile.min !== undefined && profile.max !== undefined
+            ? `${formatNumber(profile.min)} – ${formatNumber(profile.max)}`
+            : 'n/a';
+        const meanLabel = centroidValue !== undefined ? formatNumber(centroidValue) : 'n/a';
+        return `
+            <tr class="border-b border-gray-200/40">
+                <td class="px-4 py-2 text-sm font-semibold" style="color: var(--text-primary);">${escapeHtml(name)}</td>
+                <td class="px-4 py-2 text-sm" style="color: var(--text-secondary); text-transform: capitalize;">${escapeHtml(description)}</td>
+                <td class="px-4 py-2 text-sm" style="color: var(--text-primary);">${escapeHtml(meanLabel)}</td>
+                <td class="px-4 py-2 text-sm" style="color: var(--text-secondary);">${escapeHtml(range)}</td>
+            </tr>
+        `;
+    }).join('');
+
+    const highList = highSignals.length ? highSignals.map((sig) => `<span class="px-2 py-1 text-xs rounded-full" style="background: rgba(16,185,129,0.15); color: #059669;">${escapeHtml(sig)}</span>`).join(' ') : '<span class="text-xs" style="color: var(--text-secondary);">No standout highs</span>';
+    const lowList = lowSignals.length ? lowSignals.map((sig) => `<span class="px-2 py-1 text-xs rounded-full" style="background: rgba(248,113,113,0.15); color: #dc2626;">${escapeHtml(sig)}</span>`).join(' ') : '<span class="text-xs" style="color: var(--text-secondary);">No standout lows</span>';
+
+    overlay.innerHTML = `
+        <div class="neu-card" style="position: relative; max-width: 900px; width: 100%; max-height: 85vh; overflow: hidden; padding: 1.75rem;">
+            <button type="button" class="insight-modal-close neu-button" style="position: absolute; top: 1rem; right: 1rem;">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3 class="text-lg font-semibold mb-2" style="color: var(--text-primary);">${escapeHtml(title)}</h3>
+            <p class="text-sm mb-4" style="color: var(--text-secondary);">
+                Represents ${formatNumber(clusterSize)} rows (${percentLabel} of clustered data${totalSize ? `, total ${formatNumber(totalSize)} rows evaluated` : ''}).
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div class="p-4 rounded-lg" style="background: rgba(16,185,129,0.08);">
+                    <p class="text-xs uppercase font-semibold mb-2" style="color: #059669;">High signals</p>
+                    <div class="flex flex-wrap gap-2">${highList}</div>
+                </div>
+                <div class="p-4 rounded-lg" style="background: rgba(248,113,113,0.08);">
+                    <p class="text-xs uppercase font-semibold mb-2" style="color: #dc2626;">Low signals</p>
+                    <div class="flex flex-wrap gap-2">${lowList}</div>
+                </div>
+            </div>
+            <div class="mt-4 overflow-auto" style="max-height: 50vh;">
+                <table class="min-w-full border-collapse">
+                    <thead>
+                        <tr>
+                            <th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Column</th>
+                            <th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Signal</th>
+                            <th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Centroid</th>
+                            <th class="px-4 py-2 text-left text-xs uppercase tracking-wide" style="color: var(--text-secondary);">Overall Range</th>
+                        </tr>
+                    </thead>
+                    <tbody>${columnRows}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+
+    overlay.addEventListener('click', (event) => {
+        if (event.target === overlay || event.target.closest('.insight-modal-close')) {
+            overlay.remove();
+            activeInsightModal = null;
+        }
+    });
+
+    document.body.appendChild(overlay);
+    activeInsightModal = overlay;
 }
 
 function showInsightSegmentModal({ title, column, direction, percentile, totalRows, rows, payload = {} }) {

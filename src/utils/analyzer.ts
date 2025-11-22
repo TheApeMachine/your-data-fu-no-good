@@ -24,10 +24,12 @@ import {
   describeTimeSeriesInsight,
   describeTrend,
   describeClustering,
+  describePCA,
 } from './insight-writer';
 import type { DatabaseBinding } from '../storage/types';
 import { recordForensicEvent } from './forensics';
 import { findOptimalClusters } from './cluster-analysis';
+import { performPCA, assessPCASuitability } from './dimensionality-reduction';
 
 const MAX_CORRELATION_SAMPLE = 1500;
 
@@ -572,6 +574,99 @@ export async function analyzeDataset(
       'high',
       75 // Default high score for now
     ).run();
+  }
+
+  // 8. Principal Component Analysis (PCA) for dimensionality reduction
+  const numericColumnsForPCA = columns.filter(col => col.type === 'number');
+
+  if (numericColumnsForPCA.length >= 3) {
+    // Calculate average correlation strength for suitability assessment
+    let totalCorr = 0;
+    let corrCount = 0;
+    const sampleSize = Math.min(numericColumnsForPCA.length, 5);
+
+    for (let i = 0; i < sampleSize; i++) {
+      for (let j = i + 1; j < sampleSize; j++) {
+        const col1 = numericColumnsForPCA[i];
+        const col2 = numericColumnsForPCA[j];
+        const vals1 = rows.map(r => Number(r[col1.name])).filter(v => !isNaN(v));
+        const vals2 = rows.map(r => Number(r[col2.name])).filter(v => !isNaN(v));
+
+        if (vals1.length > 5 && vals2.length > 5) {
+          const corr = calculateCorrelation(vals1, vals2);
+          if (corr !== null && !isNaN(corr)) {
+            totalCorr += Math.abs(corr);
+            corrCount++;
+          }
+        }
+      }
+    }
+
+    const avgCorrelation = corrCount > 0 ? totalCorr / corrCount : 0;
+    const suitability = assessPCASuitability(numericColumnsForPCA.length, rows.length, avgCorrelation);
+
+    if (suitability.suitable) {
+      // Prepare numeric data matrix
+      const numericData: number[][] = [];
+
+      for (const row of rows) {
+        const numRow: number[] = [];
+        let hasAllValues = true;
+
+        for (const col of numericColumnsForPCA) {
+          const val = Number(row[col.name]);
+          if (isNaN(val)) {
+            hasAllValues = false;
+            break;
+          }
+          numRow.push(val);
+        }
+
+        if (hasAllValues) {
+          numericData.push(numRow);
+        }
+      }
+
+      // Only perform PCA if we have sufficient complete rows
+      if (numericData.length >= 10) {
+        const featureNames = numericColumnsForPCA.map(col => col.name);
+        const pcaResult = performPCA(numericData, featureNames, undefined, false);
+
+        if (pcaResult) {
+          const pcaDescription = describePCA(pcaResult);
+          const pcaPayload = {
+            ...pcaResult,
+            // Don't store transformed data in DB to save space
+            transformedData: undefined,
+            components: pcaResult.components.map(comp =>
+              comp.map(val => Number(val.toFixed(6)))
+            ),
+            suitability: suitability.reason,
+            insight_actions: [],
+          };
+
+          const pcaQuality = scoreInsightQuality('pca', featureNames.join(', '), pcaResult, {
+            count: numericData.length,
+            uniqueCount: numericColumnsForPCA.length,
+            nullCount: rows.length - numericData.length,
+          });
+
+          await db.prepare(`
+            INSERT INTO analyses (dataset_id, analysis_type, column_name, result, confidence, explanation, importance, quality_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            datasetId,
+            'pca',
+            featureNames.join(', '),
+            JSON.stringify(pcaPayload),
+            suitability.confidence,
+            pcaDescription.text,
+            numericColumnsForPCA.length >= 10 ? 'high' : 'medium',
+            pcaQuality.score
+          ).run();
+        }
+      }
+    }
   }
 }
 

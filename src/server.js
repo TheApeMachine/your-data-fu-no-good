@@ -17,6 +17,9 @@ app.use('*', async (c, next) => {
     if (!env.MONGODB_CONNECTION_STRING && process.env.MONGODB_CONNECTION_STRING) {
         env.MONGODB_CONNECTION_STRING = process.env.MONGODB_CONNECTION_STRING;
     }
+    if (!env.NLP_SERVICE_URL && process.env.NLP_SERVICE_URL) {
+        env.NLP_SERVICE_URL = process.env.NLP_SERVICE_URL;
+    }
     await next();
 });
 const port = Number(process.env.PORT || 8787);
