@@ -1,6 +1,8 @@
 // Data Quality Scorecard
 // Comprehensive data quality assessment with actionable metrics
 
+import { extractColumnMetadata } from './column-metadata';
+
 export interface QualityDimension {
   name: string;
   score: number; // 0-100
@@ -55,6 +57,17 @@ export interface PrioritizedRecommendation {
   effort: 'low' | 'medium' | 'high';
   actionType: string;
   affectedColumns: string[];
+}
+
+function safeParseJson<T = any>(value: unknown): T | unknown {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return value;
+    }
+  }
+  return value;
 }
 
 /**
@@ -563,7 +576,7 @@ export async function generateQualityScorecard(
   try {
     // Fetch dataset info
     const dataset = await db
-      .prepare('SELECT id, name, row_count FROM datasets WHERE id = ?')
+      .prepare('SELECT id, name, row_count, columns FROM datasets WHERE id = ?')
       .bind(datasetId)
       .first();
 
@@ -571,11 +584,11 @@ export async function generateQualityScorecard(
       return null;
     }
 
-    // Fetch column metadata
-    const columns = await db
-      .prepare('SELECT * FROM column_metadata WHERE dataset_id = ?')
-      .bind(datasetId)
-      .all();
+    const rowCount = typeof dataset.row_count === 'bigint'
+      ? Number(dataset.row_count)
+      : Number(dataset.row_count || 0);
+
+    const columnData = extractColumnMetadata(dataset.columns, rowCount);
 
     // Fetch analyses
     const analyses = await db
@@ -583,8 +596,10 @@ export async function generateQualityScorecard(
       .bind(datasetId)
       .all();
 
-    const columnData = columns.results || [];
-    const analysisData = analyses.results || [];
+    const analysisData = (analyses.results || []).map((analysis: any) => ({
+      ...analysis,
+      result: safeParseJson(analysis.result),
+    }));
 
     // Assess each quality dimension
     const completeness = assessCompleteness(
@@ -592,16 +607,16 @@ export async function generateQualityScorecard(
         name: c.column_name,
         type: c.column_type,
         nullCount: c.null_count || 0,
-        totalCount: c.total_count || dataset.row_count
+        totalCount: c.total_count || rowCount
       })),
-      dataset.row_count
+      rowCount
     );
 
     const validity = assessValidity(
       columnData.map(c => ({
         name: c.column_name,
         type: c.column_type,
-        totalCount: c.total_count || dataset.row_count,
+        totalCount: c.total_count || rowCount,
         distinctCount: c.distinct_count,
         min: c.min_value,
         max: c.max_value
@@ -627,9 +642,9 @@ export async function generateQualityScorecard(
       columnData.map(c => ({
         name: c.column_name,
         distinctCount: c.distinct_count,
-        totalCount: c.total_count || dataset.row_count
+        totalCount: c.total_count || rowCount
       })),
-      dataset.row_count
+      rowCount
     );
 
     const dimensions = {

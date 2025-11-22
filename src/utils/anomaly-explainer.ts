@@ -1,6 +1,19 @@
 // Anomaly Explanation Engine
 // Explains WHY anomalies exist rather than just detecting them
 
+import { extractColumnMetadata } from './column-metadata';
+
+function safeParseJson<T = any>(value: unknown): T | unknown {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
 export interface AnomalyExplanation {
   anomalyId: string;
   columnName: string;
@@ -605,7 +618,7 @@ export async function generateAnomalyExplanations(
   try {
     // Fetch dataset info
     const dataset = await db
-      .prepare('SELECT id, name FROM datasets WHERE id = ?')
+      .prepare('SELECT id, name, columns FROM datasets WHERE id = ?')
       .bind(datasetId)
       .first();
 
@@ -619,19 +632,16 @@ export async function generateAnomalyExplanations(
       .bind(datasetId, 'outlier', 'anomaly')
       .all();
 
-    const analysisData = analyses.results || [];
+    const analysisData = (analyses.results || []).map((analysis: any) => ({
+      ...analysis,
+      result: safeParseJson(analysis.result),
+    }));
 
     if (analysisData.length === 0) {
       return null;
     }
 
-    // Fetch column metadata for stats
-    const columns = await db
-      .prepare('SELECT * FROM column_metadata WHERE dataset_id = ?')
-      .bind(datasetId)
-      .all();
-
-    const columnData = columns.results || [];
+    const columnData = extractColumnMetadata(dataset.columns);
 
     // Check if dataset has timestamp
     const hasTimestamp = columnData.some(c =>

@@ -1,6 +1,19 @@
 // Smart Column Recommendations
 // Analyzes columns to identify which ones deserve user attention
 
+import { extractColumnMetadata } from './column-metadata';
+
+function safeParseJson<T = any>(value: unknown): T | unknown {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
 export interface ColumnRecommendation {
   columnName: string;
   priority: 'critical' | 'high' | 'medium' | 'low';
@@ -458,7 +471,7 @@ export async function generateColumnRecommendations(
   try {
     // Fetch dataset info
     const dataset = await db
-      .prepare('SELECT id, name, row_count FROM datasets WHERE id = ?')
+      .prepare('SELECT id, name, row_count, columns FROM datasets WHERE id = ?')
       .bind(datasetId)
       .first();
 
@@ -466,11 +479,11 @@ export async function generateColumnRecommendations(
       return null;
     }
 
-    // Fetch column metadata
-    const columns = await db
-      .prepare('SELECT * FROM column_metadata WHERE dataset_id = ?')
-      .bind(datasetId)
-      .all();
+    const rowCount = typeof dataset.row_count === 'bigint'
+      ? Number(dataset.row_count)
+      : Number(dataset.row_count || 0);
+
+    const columnData = extractColumnMetadata(dataset.columns, rowCount);
 
     // Fetch analyses
     const analyses = await db
@@ -478,8 +491,10 @@ export async function generateColumnRecommendations(
       .bind(datasetId)
       .all();
 
-    const columnData = columns.results || [];
-    const analysisData = analyses.results || [];
+    const analysisData = (analyses.results || []).map((analysis: any) => ({
+      ...analysis,
+      result: safeParseJson(analysis.result),
+    }));
 
     // Extract correlation data
     const correlationAnalysis = analysisData.find(a => a.analysis_type === 'correlation');
@@ -504,7 +519,7 @@ export async function generateColumnRecommendations(
       const informationContent = calculateInformationContent({
         type: col.column_type,
         distinctCount: col.distinct_count,
-        totalCount: col.total_count || dataset.row_count,
+        totalCount: col.total_count || rowCount,
         stddev: col.stddev_value,
         mean: col.mean_value,
         nullCount: col.null_count || 0
@@ -513,7 +528,7 @@ export async function generateColumnRecommendations(
       const dataQuality = calculateDataQuality(
         {
           nullCount: col.null_count || 0,
-          totalCount: col.total_count || dataset.row_count,
+          totalCount: col.total_count || rowCount,
           distinctCount: col.distinct_count
         },
         outlierCount
@@ -525,7 +540,7 @@ export async function generateColumnRecommendations(
 
       const uniqueness = calculateUniqueness({
         distinctCount: col.distinct_count,
-        totalCount: col.total_count || dataset.row_count,
+        totalCount: col.total_count || rowCount,
         name: col.column_name
       });
 
@@ -549,7 +564,7 @@ export async function generateColumnRecommendations(
       const category = determineCategory(metrics, {
         name: col.column_name,
         nullCount: col.null_count || 0,
-        totalCount: col.total_count || dataset.row_count
+        totalCount: col.total_count || rowCount
       });
 
       const priority = determinePriority(category, score);
