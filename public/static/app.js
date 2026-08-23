@@ -213,10 +213,10 @@ async function handleFile(file) {
     if (!file) return;
 
     // Validate file type
-    const validTypes = ['.csv', '.json'];
+    const validTypes = ['.csv', '.json', '.jsonl'];
     const fileExt = '.' + file.name.split('.').pop().toLowerCase();
     if (!validTypes.includes(fileExt)) {
-        alert('Please upload a CSV or JSON file');
+        alert('Please upload a CSV, JSON, or JSONL file');
         return;
     }
 
@@ -226,11 +226,17 @@ async function handleFile(file) {
     updateStatus('Uploading file...', `${file.name} (${formatFileSize(file.size)})`, 10);
 
     try {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        const response = await axios.post('/api/upload', formData, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+        // Raw-body streaming upload: the browser streams the file from disk
+        // and the server parses it chunk-by-chunk, so large files never get
+        // buffered whole on either side.
+        const response = await axios.post(`/api/upload/stream?filename=${encodeURIComponent(file.name)}`, file, {
+            headers: { 'Content-Type': 'application/octet-stream' },
+            onUploadProgress: (e) => {
+                if (e.lengthComputable && e.total > 0) {
+                    const pct = Math.min(25, Math.round((e.loaded / e.total) * 25));
+                    updateStatus('Uploading file...', `${file.name} — ${formatFileSize(e.loaded)} of ${formatFileSize(e.total)}`, pct);
+                }
+            }
         });
 
         if (response.data.success) {

@@ -13,7 +13,7 @@ export interface Dataset {
   id: number;
   name: string;
   original_filename: string;
-  file_type: 'csv' | 'json' | 'mongodb';
+  file_type: 'csv' | 'json' | 'jsonl' | 'mongodb';
   row_count: number;
   column_count: number;
   columns: ColumnDefinition[];

@@ -328,11 +328,11 @@ Now generate the ${query_type === 'aggregate' ? 'pipeline' : 'query'}:`;
                         <!-- File Upload UI -->
                         <div id="file-upload-area" class="upload-method-area">
                             <div id="upload-area" class="upload-area neu-card-inset rounded-lg p-12 text-center cursor-pointer">
-                                <input type="file" id="file-input" accept=".csv,.json" class="hidden">
+                                <input type="file" id="file-input" accept=".csv,.json,.jsonl" class="hidden">
                                 <div id="upload-prompt">
                                     <i class="fas fa-cloud-upload-alt text-6xl mb-4" style="color: var(--text-secondary);"></i>
                                     <p class="text-xl mb-2">Drop your file here or click to browse</p>
-                                    <p class="text-sm" style="color: var(--text-secondary);">Supports CSV and JSON files</p>
+                                    <p class="text-sm" style="color: var(--text-secondary);">Supports CSV, JSON, and JSONL files</p>
                                 </div>
                                 <div id="upload-progress" class="hidden">
                                     <i class="fas fa-spinner fa-spin text-4xl mb-4" style="color: var(--accent);"></i>

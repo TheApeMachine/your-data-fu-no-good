@@ -30,4 +30,7 @@ const port = Number(process.env.PORT || 8787);
 
 console.log(`🚀 Data Intelligence Platform running on http://localhost:${port}`);
 
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
+
+// Large streaming uploads can outlast Node's default request timeout (300s)
+(server as any).requestTimeout = 0;

@@ -60,13 +60,13 @@ async function loadRelationshipGraph(datasetId) {
 }
 
 // Graph filter state
-let graphNodeFilters = {
+const graphNodeFilters = {
     column: true,
     topic: true,
     topic_cluster: true,
     value: true
 };
-let graphEdgeFilters = {
+const graphEdgeFilters = {
     correlation: true,
     association: true,
     topic: true,
@@ -78,7 +78,7 @@ let graphSearchTerm = '';
 let allGraphNodes = [];
 let allGraphEdges = [];
 
-function renderGraph(nodes, edges) {
+const renderGraph = (nodes, edges) => {
     const container = document.getElementById('graph-container');
 
     // Store nodes and edges for filtering
@@ -221,7 +221,7 @@ function renderGraph(nodes, edges) {
             {
                 selector: 'node',
                 style: {
-                    'background-color': function(ele) {
+                    'background-color': (ele) => {
                         const type = ele.data('type');
                         if (type === 'column') return '#3b82f6';
                         if (type === 'topic') return '#14b8a6';
@@ -229,8 +229,8 @@ function renderGraph(nodes, edges) {
                         return '#10b981';
                     },
                     'label': 'data(label)',
-                    'width': function(ele) { return ele.data('nodeSize') * 2; },
-                    'height': function(ele) { return ele.data('nodeSize') * 2; },
+                    'width': (ele) => ele.data('nodeSize') * 2,
+                    'height': (ele) => ele.data('nodeSize') * 2,
                     'text-valign': 'center',
                     'text-halign': 'center',
                     'font-size': '10px',
@@ -267,8 +267,8 @@ function renderGraph(nodes, edges) {
             {
                 selector: 'edge',
                 style: {
-                    'width': function(ele) { return 1 + ele.data('strength') * 5; },
-                    'line-color': function(ele) {
+                    'width': (ele) => 1 + ele.data('strength') * 5,
+                    'line-color': (ele) => {
                         const type = ele.data('type');
                         if (type === 'correlation') return '#a855f7';
                         if (type === 'association') return '#f97316';
@@ -277,7 +277,7 @@ function renderGraph(nodes, edges) {
                         if (type === 'topic_cluster') return '#0284c7';
                         return '#94a3b8';
                     },
-                    'target-arrow-color': function(ele) {
+                    'target-arrow-color': (ele) => {
                         const type = ele.data('type');
                         if (type === 'correlation') return '#a855f7';
                         if (type === 'association') return '#f97316';
@@ -289,7 +289,7 @@ function renderGraph(nodes, edges) {
                     'target-arrow-shape': 'none',
                     'curve-style': 'bezier',
                     'opacity': 0.6,
-                    'label': function(ele) {
+                    'label': (ele) => {
                         const type = ele.data('type');
                         if (type === 'correlation' || type === 'association' || type === 'topic' || type === 'topic_similarity' || type === 'topic_cluster') {
                             return ele.data('label');
@@ -496,10 +496,10 @@ function getLayoutOptions(name) {
                 fit: true,
                 padding: 50,
                 minNodeSpacing: 40,
-                concentric: function (node) {
+                concentric: (node) => {
                     return node.degree();
                 },
-                levelWidth: function (nodes) {
+                levelWidth: (nodes) => {
                     return nodes.maxDegree() / 4;
                 }
             };
@@ -532,7 +532,6 @@ function getLayoutOptions(name) {
                 spacingFactor: 1.4,
                 directed: true
             };
-        case 'random':
         default:
             return {
                 name: 'random',

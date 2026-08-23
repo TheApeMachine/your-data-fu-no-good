@@ -34,6 +34,17 @@ class DuckDBStatement implements PreparedStatement {
 export class DuckDBBinding implements DatabaseBinding {
   private readonly db: duckdb.Database;
   private readonly ready: Promise<void>;
+  // All statements share one DuckDB connection with a single transaction
+  // context, so operations from concurrent requests must never interleave.
+  // Every public operation is funneled through this promise chain.
+  private opChain: Promise<unknown> = Promise.resolve();
+
+  private enqueue<T>(op: () => Promise<T>): Promise<T> {
+    const result = this.opChain.then(op);
+    // Keep the chain alive regardless of individual failures
+    this.opChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
 
   constructor(dbPath?: string) {
     const resolvedPath = dbPath ?? process.env.DUCKDB_PATH ?? path.join(process.cwd(), 'data', 'analysis.duckdb');
@@ -48,19 +59,31 @@ export class DuckDBBinding implements DatabaseBinding {
   }
 
   async batch(statements: PreparedStatement[]): Promise<void> {
+    return this.enqueue(() => this.runBatch(statements));
+  }
+
+  // Runs inside the serialized op chain; uses rawExecute so statements of
+  // one transaction can never interleave with other queued operations.
+  private async runBatch(statements: PreparedStatement[]): Promise<void> {
     await this.ready;
-    await this.execute('BEGIN TRANSACTION', [], { skipLastId: true });
+    await this.rawExecute('BEGIN TRANSACTION', [], { skipLastId: true });
     try {
       for (const statement of statements) {
         if (statement.sql == null) {
           throw new Error('DuckDB batch requires prepared statements created via DuckDBBinding.prepare');
         }
         const params = Array.isArray(statement.params) ? statement.params : [];
-        await this.execute(statement.sql, params, { skipLastId: true });
+        await this.rawExecute(statement.sql, params, { skipLastId: true });
       }
-      await this.execute('COMMIT', [], { skipLastId: true });
+      await this.rawExecute('COMMIT', [], { skipLastId: true });
     } catch (error) {
-      await this.execute('ROLLBACK', [], { skipLastId: true });
+      try {
+        await this.rawExecute('ROLLBACK', [], { skipLastId: true });
+      } catch (rollbackErr) {
+        // A failed rollback leaves the transaction aborted on the shared
+        // connection; surface it loudly instead of masking the original.
+        console.error('Rollback failed after batch error:', rollbackErr);
+      }
       throw error;
     }
   }
@@ -206,6 +229,10 @@ export class DuckDBBinding implements DatabaseBinding {
   }
 
   async query<T = any>(sql: string, params: any[] = [], options: QueryOptions = {}): Promise<T[]> {
+    return this.enqueue(() => this.rawQuery<T>(sql, params, options));
+  }
+
+  private async rawQuery<T = any>(sql: string, params: any[] = [], options: QueryOptions = {}): Promise<T[]> {
     await this.ready;
     const finalSql = options.limit ? `${sql} LIMIT ${options.limit}` : sql;
     return new Promise<T[]>((resolve, reject) => {
@@ -237,6 +264,10 @@ export class DuckDBBinding implements DatabaseBinding {
   }
 
   async execute(sql: string, params: any[] = [], options: QueryOptions = {}): Promise<RunMeta> {
+    return this.enqueue(() => this.rawExecute(sql, params, options));
+  }
+
+  private async rawExecute(sql: string, params: any[] = [], options: QueryOptions = {}): Promise<RunMeta> {
     await this.ready;
     const connection = this.db;
     return new Promise<RunMeta>((resolve, reject) => {

@@ -32,10 +32,25 @@ analyze.post('/:id', async (c) => {
       DELETE FROM visualizations WHERE dataset_id = ?
     `).bind(datasetId).run();
 
-    // Get data rows
-    const rowsResult = await db.prepare(`
-      SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
-    `).bind(datasetId).all();
+    // Get data rows. Very large datasets are analyzed on an evenly spread
+    // sample so the whole table is never materialized in memory.
+    const ANALYSIS_MAX_ROWS = 200_000;
+    const countRow = await db.prepare(`
+      SELECT COUNT(*) AS n FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
+    `).bind(datasetId).first<{ n: number }>();
+
+    let rowsResult;
+    if (countRow && countRow.n > ANALYSIS_MAX_ROWS) {
+      const stride = Math.ceil(countRow.n / ANALYSIS_MAX_ROWS);
+      console.log(`Analysis sampling: every ${stride}th row of ${countRow.n} (~${Math.floor(countRow.n / stride)} rows)`);
+      rowsResult = await db.prepare(`
+        SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0 AND row_number % ? = 0
+      `).bind(datasetId, stride).all();
+    } else {
+      rowsResult = await db.prepare(`
+        SELECT data FROM data_rows WHERE dataset_id = ? AND is_cleaned = 0
+      `).bind(datasetId).all();
+    }
 
     let rows = rowsResult.results.map(r => JSON.parse(r.data as string));
     const columns = JSON.parse(dataset.columns as string);

@@ -12,4 +12,6 @@
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   },
+  // Tests run via `bun test`, which transpiles without typechecking
+  "exclude": ["node_modules", "tests"]
 }
